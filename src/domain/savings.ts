@@ -1,3 +1,4 @@
+import { getCurrency } from './currency';
 import { addDays, diffDays, today as todayFn } from './dates';
 import type { ISODate, SavingsGoal } from './types';
 
@@ -29,10 +30,13 @@ export interface GoalProgress {
 const DAYS_PER_MONTH = 30.436875;
 
 export function goalProgress(
-  goal: Pick<SavingsGoal, 'targetMinor' | 'initialMinor' | 'startDate' | 'deadline'>,
+  goal: Pick<SavingsGoal, 'targetMinor' | 'initialMinor' | 'startDate' | 'deadline'> & { currency?: string },
   contributions: GoalContribution[],
   ref: ISODate = todayFn(),
 ): GoalProgress {
+  // Required amounts are rounded UP to whole currency units (₦64,144 rather than ₦64,143.83).
+  const unit = Math.pow(10, getCurrency(goal.currency ?? 'NGN').decimals);
+  const ceilUnit = (minor: number) => Math.ceil(minor / unit) * unit;
   const saved = Math.max(0, goal.initialMinor + contributions.reduce((s, c) => s + c.amountMinor, 0));
   const target = Math.max(1, goal.targetMinor);
   const remaining = Math.max(0, target - saved);
@@ -56,9 +60,9 @@ export function goalProgress(
     const total = Math.max(1, diffDays(goal.startDate, goal.deadline));
     timeProgress = Math.min(1, Math.max(0, diffDays(goal.startDate, ref) / total));
     if (daysLeft > 0) {
-      requiredDaily = Math.ceil(remaining / daysLeft);
-      requiredWeekly = Math.ceil(remaining / Math.max(1, daysLeft / 7));
-      requiredMonthly = Math.ceil(remaining / Math.max(1, daysLeft / DAYS_PER_MONTH));
+      requiredDaily = ceilUnit(remaining / daysLeft);
+      requiredWeekly = ceilUnit(remaining / Math.max(1, daysLeft / 7));
+      requiredMonthly = ceilUnit(remaining / Math.max(1, daysLeft / DAYS_PER_MONTH));
       // On track if the recent pace would reach the target by the deadline.
       onTrack = remaining === 0 || monthlyRate >= requiredMonthly;
     } else {

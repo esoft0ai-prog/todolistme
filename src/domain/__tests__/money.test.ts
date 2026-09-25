@@ -44,6 +44,11 @@ describe('formatMoney', () => {
     expect(formatMoney(150_000_000, 'NGN', { compact: true })).toBe('₦1.5M');
     expect(formatMoney(2_500_000, 'NGN', { compact: true })).toBe('₦25K');
     expect(formatMoney(50_000, 'NGN', { compact: true })).toBe('₦500');
+    // Regression: integer parts must keep their trailing zeros.
+    expect(formatMoney(15_000_000, 'NGN', { compact: true })).toBe('₦150K');
+    expect(formatMoney(10_000_000, 'NGN', { compact: true })).toBe('₦100K');
+    expect(formatMoney(200_000_000, 'NGN', { compact: true })).toBe('₦2M');
+    expect(formatMoney(120_000_000_000, 'NGN', { compact: true })).toBe('₦1.2B');
   });
 
   it('never throws on bad numbers', () => {

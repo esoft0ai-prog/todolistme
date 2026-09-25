@@ -131,9 +131,9 @@ export function DashboardScreen() {
                 </View>
               </Row>
               <Row gap={8} style={{ marginTop: 14 }}>
-                <Btn title="Add" icon="add" small variant="secondary" onPress={() => nav.navigate('TransactionForm')} style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.18)' }} />
-                <Btn title="Transfer" icon="swap-horizontal" small variant="secondary" onPress={() => nav.navigate('TransactionForm', { type: 'transfer' })} style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.18)' }} />
-                <Btn title="Accounts" icon="wallet" small variant="secondary" onPress={() => nav.navigate('Accounts')} style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.18)' }} />
+                <Btn title="Add" icon="add" small variant="glass" onPress={() => nav.navigate('TransactionForm')} style={{ flex: 1 }} />
+                <Btn title="Transfer" icon="swap-horizontal" small variant="glass" onPress={() => nav.navigate('TransactionForm', { type: 'transfer' })} style={{ flex: 1 }} />
+                <Btn title="Accounts" icon="wallet" small variant="glass" onPress={() => nav.navigate('Accounts')} style={{ flex: 1 }} />
               </Row>
             </GradientCard>
 

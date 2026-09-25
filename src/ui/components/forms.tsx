@@ -77,7 +77,7 @@ export function TextField({
           onChangeText={onChangeText}
           placeholder={placeholder}
           placeholderTextColor={c.textFaint}
-          style={[t.body, { color: c.text, flex: 1, paddingVertical: multiline ? 10 : 0, textAlignVertical: multiline ? 'top' : 'center', minHeight: multiline ? 80 : 48 }]}
+          style={[t.body, { color: c.text, flex: 1, minWidth: 0, paddingVertical: multiline ? 10 : 0, textAlignVertical: multiline ? 'top' : 'center', minHeight: multiline ? 80 : 48 }]}
           multiline={multiline}
           keyboardType={keyboardType}
           maxLength={maxLength}
@@ -162,7 +162,7 @@ export function AmountField({
           placeholder="0"
           placeholderTextColor={c.textFaint}
           keyboardType="decimal-pad"
-          style={[big ? t.display : t.number, { color: c.text, flex: 1, minHeight: 48, padding: 0 }]}
+          style={[big ? t.display : t.number, { color: c.text, flex: 1, minWidth: 0, minHeight: 48, padding: 0 }]}
           accessibilityLabel={`${label ?? 'Amount'} in ${currency}`}
           autoFocus={autoFocus}
           maxLength={20}

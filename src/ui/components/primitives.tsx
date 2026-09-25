@@ -196,7 +196,7 @@ export function Button({
 }: {
   title: string;
   onPress: () => void;
-  variant?: 'primary' | 'secondary' | 'ghost' | 'danger' | 'accent';
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger' | 'accent' | 'glass';
   icon?: IconName;
   loading?: boolean;
   disabled?: boolean;
@@ -206,8 +206,18 @@ export function Button({
 }) {
   const { c, t } = useTheme();
   const bg =
-    variant === 'primary' ? c.primary : variant === 'accent' ? c.accent : variant === 'danger' ? c.danger : variant === 'secondary' ? c.primarySoft : 'transparent';
-  const fg = variant === 'primary' || variant === 'accent' ? c.onPrimary : variant === 'danger' ? '#fff' : c.primary;
+    variant === 'primary'
+      ? c.primary
+      : variant === 'accent'
+        ? c.accent
+        : variant === 'danger'
+          ? c.danger
+          : variant === 'secondary'
+            ? c.primarySoft
+            : variant === 'glass'
+              ? 'rgba(255,255,255,0.2)'
+              : 'transparent';
+  const fg = variant === 'primary' || variant === 'accent' ? c.onPrimary : variant === 'danger' || variant === 'glass' ? '#fff' : c.primary;
   const off = disabled || loading;
   return (
     <Pressable

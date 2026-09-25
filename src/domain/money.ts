@@ -98,7 +98,8 @@ export function formatMoney(minor: number, currency: CurrencyCode, opts: FormatO
     const [div, label] = units.find(([d]) => major >= d)!;
     const v = major / div;
     const str = v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2);
-    body = `${str.replace(/\.?0+$/, '')}${label}`;
+    // Only trim zeros that follow a decimal point ("1.50" → "1.5", "2.00" → "2"; never "150" → "15").
+    body = `${str.includes('.') ? str.replace(/\.?0+$/, '') : str}${label}`;
   } else {
     const fixed = major.toFixed(info.decimals);
     let [intPart, frac] = fixed.split('.');

@@ -66,8 +66,11 @@ describe('savings goals', () => {
     expect(p.remainingMinor).toBe(55_000_000);
     expect(p.percent).toBeCloseTo(0.3125);
     expect(p.daysLeft).toBe(183);
-    expect(p.requiredMonthlyMinor).toBe(Math.ceil(55_000_000 / (183 / 30.436875)));
-    expect(p.requiredWeeklyMinor).toBe(Math.ceil(55_000_000 / (183 / 7)));
+    // Rounded up to whole naira.
+    expect(p.requiredMonthlyMinor).toBe(Math.ceil(55_000_000 / (183 / 30.436875) / 100) * 100);
+    expect(p.requiredWeeklyMinor).toBe(Math.ceil(55_000_000 / (183 / 7) / 100) * 100);
+    expect(p.requiredMonthlyMinor! % 100).toBe(0);
+    expect(goalProgress({ ...goal, currency: 'JPY', targetMinor: 1000, initialMinor: 0 }, [], '2026-06-20').requiredWeeklyMinor).toBe(Math.ceil(1000 / (183 / 7)));
     expect(p.timeProgress).toBeGreaterThan(0.48);
   });
 
