@@ -103,8 +103,12 @@ function Shell() {
   useEffect(
     () =>
       onNotificationTap((data) => {
+        let tries = 0;
         const go = () => {
-          if (!navigationRef.isReady()) return;
+          if (!navigationRef.isReady()) {
+            if (tries++ < 20) setTimeout(go, 500); // wait for boot/unlock
+            return;
+          }
           const type = String(data.entityType ?? '');
           const id = String(data.entityId ?? '');
           if (type === 'debt' && id) navigationRef.navigate('DebtDetail', { id });

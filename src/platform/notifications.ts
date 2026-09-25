@@ -95,5 +95,14 @@ export const expoNotificationGateway: NotificationGateway = {
 export function onNotificationTap(cb: (data: Record<string, unknown>) => void): () => void {
   if (Platform.OS === 'web') return () => undefined;
   const sub = Notifications.addNotificationResponseReceivedListener((r) => cb((r.notification.request.content.data ?? {}) as Record<string, unknown>));
+  // A tap that cold-started the app happens before the listener exists.
+  void Notifications.getLastNotificationResponseAsync()
+    .then((r) => {
+      if (r) {
+        cb((r.notification.request.content.data ?? {}) as Record<string, unknown>);
+        void Notifications.clearLastNotificationResponseAsync();
+      }
+    })
+    .catch(() => undefined);
   return () => sub.remove();
 }
