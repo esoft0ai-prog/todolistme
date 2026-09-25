@@ -20,6 +20,7 @@ Finora handles sensitive financial data and is designed so that **nothing leaves
 * No analytics, crash reporting, ads, tracking or remote config SDKs. `expo-updates` is not included.
 * expo-notifications' Firebase messaging service is removed from the manifest; only local notifications are used; push-token registration is never enabled.
 * Explicitly blocked permissions: location (fine/coarse/background), camera, microphone, contacts, SMS, call log, phone state, external storage/media, overlay, advertising ID, C2DM.
+* Also blocked: launcher-badge permissions merged by the notification library (Samsung, Huawei, Oppo, HTC, Sony…) and the Play install-referrer permission — Finora sets no badges and is not distributed through Play.
 * Remaining permissions: `POST_NOTIFICATIONS`, `RECEIVE_BOOT_COMPLETED` (re-arm reminders after restart), `SCHEDULE_EXACT_ALARM` (≤ Android 12L) / `USE_EXACT_ALARM` (reminders on time), `VIBRATE`, `USE_BIOMETRIC`/`USE_FINGERPRINT`. Debug builds additionally have `INTERNET` for the Metro dev server.
 * Files are saved/shared with the Storage Access Framework and share sheet — no storage permission.
 
