@@ -342,3 +342,13 @@ describe('assistant & dashboard (end to end)', () => {
     expect(view!.summary.totalPayableMinor).toBeGreaterThan(0);
   });
 });
+
+describe('pin length hint', () => {
+  it('records the PIN length so the lock screen never auto-submits a partial PIN', async () => {
+    const sec = new SecurityService(new MemorySecureStore(), random);
+    expect(await sec.pinLength()).toBeNull();
+    await sec.setPin('482913');
+    expect(await sec.pinLength()).toBe(6);
+    expect((await sec.verifyPin('482913')).ok).toBe(true);
+  });
+});

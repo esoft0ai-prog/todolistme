@@ -63,9 +63,16 @@ export class SecurityService {
     const err = validatePin(pin);
     if (err) throw new Error(err);
     const salt = this.random.bytes(16);
-    const record = `pbkdf2-sha256$${PIN_ITERATIONS}$${toHex(salt)}$${hashPin(pin, salt, PIN_ITERATIONS)}`;
+    const record = `pbkdf2-sha256$${PIN_ITERATIONS}$${toHex(salt)}$${hashPin(pin, salt, PIN_ITERATIONS)}$${pin.length}`;
     await this.store.setItem(KEYS.pinHash, record);
     await this.resetFailures();
+  }
+
+  /** Length of the stored PIN (4–6), so the lock screen can submit automatically without burning attempts. */
+  async pinLength(): Promise<number | null> {
+    const record = await this.store.getItem(KEYS.pinHash);
+    const len = Number(record?.split('$')[4]);
+    return len >= 4 && len <= 6 ? len : null;
   }
 
   async clearPin(): Promise<void> {
