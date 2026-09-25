@@ -1,0 +1,109 @@
+name: Android APK
+
+# Builds the offline Finora APK on GitHub's Ubuntu runners.
+#  - every push / pull request: typecheck + tests + release APK uploaded as a workflow artifact
+#  - tags "v*" (e.g. v1.0.0): also attaches the APK to a GitHub Release
+#
+# Signing (recommended): add these repository secrets
+#   ANDROID_KEYSTORE_BASE64   base64 of your .keystore file
+#   ANDROID_KEYSTORE_PASSWORD store password
+#   ANDROID_KEY_ALIAS         key alias
+#   ANDROID_KEY_PASSWORD      key password
+# Without them the APK is signed with the public React Native debug key (fine for testing only).
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit & integration tests
+        run: npx jest --ci
+
+      - name: Generate native Android project
+        run: npx expo prebuild -p android --clean --no-install
+
+      - name: Configure release signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/finora-release.keystore"
+            {
+              echo "storeFile=$RUNNER_TEMP/finora-release.keystore"
+              echo "storePassword=$STORE_PASSWORD"
+              echo "keyAlias=$KEY_ALIAS"
+              echo "keyPassword=$KEY_PASSWORD"
+            } > android/keystore.properties
+            echo "Release signing configured."
+          else
+            echo "::warning::No signing secrets configured — the APK will be signed with the public debug key (testing only)."
+          fi
+
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Verify APK (permissions, signature, size)
+        run: |
+          APK=$(ls android/app/build/outputs/apk/release/*.apk)
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          echo "APK: $APK ($(du -h "$APK" | cut -f1))"
+          "$BT/aapt2" dump permissions "$APK" | tee permissions.txt
+          if grep -q "android.permission.INTERNET" permissions.txt; then echo "::error::Release APK must not request INTERNET"; exit 1; fi
+          "$BT/apksigner" verify --print-certs "$APK" | head -5
+          sha256sum "$APK" | tee "$APK.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Finora-release-apk
+          path: |
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/apk/release/*.sha256
+            android/app/build/outputs/mapping/release/mapping.txt
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/apk/release/*.sha256
+          generate_release_notes: true
