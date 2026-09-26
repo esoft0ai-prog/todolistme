@@ -107,3 +107,4 @@ jobs:
             android/app/build/outputs/apk/release/*.apk
             android/app/build/outputs/apk/release/*.sha256
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
