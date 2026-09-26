@@ -145,8 +145,8 @@ export function webhookState(lastReceivedAt: Date | null, staleThresholdMinutes:
 
 // ---------------------------------------------------------------- notes
 export const NOTE_EDIT_WINDOW_MS = 2 * HOUR;
-export function noteEditable(createdAt: Date, authorId: string, userId: string, now = new Date()): boolean {
-  return authorId === userId && now.getTime() - createdAt.getTime() < NOTE_EDIT_WINDOW_MS;
+export function noteEditable(createdAt: Date, authorId: string, userId: string, now = new Date(), windowMs = NOTE_EDIT_WINDOW_MS): boolean {
+  return authorId === userId && now.getTime() - createdAt.getTime() < windowMs;
 }
 
 // ---------------------------------------------------------------- money
@@ -157,12 +157,12 @@ export function cpl(dailySpend: number | null, leadCount: number): number | null
 }
 
 // ---------------------------------------------------------------- deployments
-export function hasRollbackAvailable(prevPath: string | null, prevDeployedAt: Date | null, now = new Date()): boolean {
-  return !!prevPath && !!prevDeployedAt && now.getTime() - prevDeployedAt.getTime() < 30 * DAY;
+export function hasRollbackAvailable(prevPath: string | null, prevDeployedAt: Date | null, now = new Date(), retentionDays = 30): boolean {
+  return !!prevPath && !!prevDeployedAt && now.getTime() - prevDeployedAt.getTime() < retentionDays * DAY;
 }
 
-export function earlyWarningActive(deployedAt: Date | null, now = new Date()): boolean {
-  return !!deployedAt && now.getTime() - deployedAt.getTime() < 72 * HOUR;
+export function earlyWarningActive(deployedAt: Date | null, now = new Date(), windowHours = 72): boolean {
+  return !!deployedAt && now.getTime() - deployedAt.getTime() < windowHours * HOUR;
 }
 
 // ---------------------------------------------------------------- insights

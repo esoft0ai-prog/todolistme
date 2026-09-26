@@ -99,13 +99,13 @@ describe('lead ingestion + ownership paths', () => {
     const again = await owner.post(`/api/leads/${leadId}/respond`);
     expect(again.status).toBe(409);
     const audit = (await owner.get(`/api/leads/${leadId}/audit`)).body;
-    expect(audit.events.at(-1).description).toMatch(/claimed and acknowledged/);
+    expect(audit.data.at(-1).description).toMatch(/claimed and acknowledged/);
   });
 
   it('Path B then C: owner assigns, then reassigns; members cannot respond to others’ leads', async () => {
     const { raw, sig } = signed(secret, { name: 'Path Lead', email: 'path@example.com' });
     const id = (await request(app).post(`/api/v1/ingest/${tenantId}/${deploymentId}`).set('content-type', 'application/json').set('x-camplo-signature', sig).send(raw)).body.lead_id;
-    const members = (await owner.get('/api/team/members')).body as Array<{ id: string; email: string; role: string }>;
+    const members = (await owner.get('/api/team/members')).body.data as Array<{ id: string; email: string; role: string }>;
     const sarah = members.find((m) => m.email.startsWith('sarah'))!;
     const kofi = members.find((m) => m.email.startsWith('kofi'))!;
     const b = await owner.post(`/api/leads/${id}/assign`).send({ assigneeId: sarah.id });
@@ -127,7 +127,7 @@ describe('lead ingestion + ownership paths', () => {
     const { raw, sig } = signed(secret, { name: 'Ack Lead' });
     const id = (await request(app).post(`/api/v1/ingest/${tenantId}/${deploymentId}`).set('content-type', 'application/json').set('x-camplo-signature', sig).send(raw)).body.lead_id;
     const [u] = await db.select().from(s.users).where(eq(s.users.email, DEMO_EMAIL));
-    const token = new URL((await createAckToken(db, tenantId, id, u.id)).replace('/#/', '/')).searchParams.get('token')!;
+    const token = (await createAckToken(db, tenantId, id, u.id)).split('/api/acknowledge/')[1];
     expect((await request(app).get(`/api/leads/acknowledge/preview?token=${token}`)).body.state).toBe('ok');
     expect((await request(app).post('/api/leads/acknowledge').send({ token })).body.state).toBe('done');
     expect((await request(app).post('/api/leads/acknowledge').send({ token })).body.state).toBe('already');
@@ -150,7 +150,7 @@ describe('notes are permanent', () => {
 
 describe('campaigns', () => {
   it('enforces the 3-pin limit', async () => {
-    const list = (await owner.get('/api/campaigns')).body as Array<{ id: string; pinned: boolean }>;
+    const list = (await owner.get('/api/campaigns')).body.data as Array<{ id: string; pinned: boolean }>;
     const unpinned = list.find((c) => !c.pinned)!;
     const r = await owner.post(`/api/campaigns/${unpinned.id}/pin`);
     expect(r.status).toBe(409);
@@ -161,7 +161,7 @@ describe('campaigns', () => {
     const c = (await owner.post('/api/campaigns').send({ name: 'Test Campaign', budget: 1000, cplThreshold: 50, currency: 'USD' })).body;
     expect(c.status).toBe('active');
     await owner.patch(`/api/campaigns/${c.id}`).send({ dailySpend: 200 });
-    const mem = (await owner.get(`/api/campaigns/${c.id}/memory`)).body;
+    const mem = (await owner.get(`/api/campaigns/${c.id}/memory`)).body.data;
     expect(mem[0].type).toBe('budget');
     expect((await owner.post(`/api/campaigns/${c.id}/complete`)).status).toBe(200);
     await runJob(db, 'retrospective-generation', { tenantId, campaignId: c.id });
@@ -213,15 +213,15 @@ describe('page hosting', () => {
 
 describe('team notes', () => {
   it('addressed member reads and acknowledges a time-bound note', async () => {
-    const members = (await owner.get('/api/team/members')).body as Array<{ id: string; email: string }>;
+    const members = (await owner.get('/api/team/members')).body.data as Array<{ id: string; email: string }>;
     const amara = members.find((m) => m.email.startsWith('amara'))!;
     const n = (await owner.post('/api/team-notes').send({ content: 'Call the VIP back', recipientIds: [amara.id], deadline: new Date(Date.now() + 3600_000).toISOString() })).body;
     expect(n.deadlineStatus).toBe('pending');
     const a = await login(amara.email);
-    const mine = (await a.get('/api/team-notes?addressedTo=me')).body;
+    const mine = (await a.get('/api/team-notes?addressedTo=me')).body.data;
     expect(mine.find((x: { id: string }) => x.id === n.id).unread).toBe(true);
     await a.post(`/api/team-notes/${n.id}/acknowledge`);
-    const after = (await a.get('/api/team-notes?addressedTo=me')).body.find((x: { id: string }) => x.id === n.id);
+    const after = (await a.get('/api/team-notes?addressedTo=me')).body.data.find((x: { id: string }) => x.id === n.id);
     expect(after.deadlineStatus).toBe('met');
     expect(after.unread).toBe(false);
   });
@@ -234,18 +234,18 @@ describe('intelligence', () => {
     const second = await level1(db, t);
     expect(first).toBeGreaterThan(0);
     expect(second).toBe(0);
-    const feed = (await owner.get('/api/insights')).body;
+    const feed = (await owner.get('/api/insights')).body.data;
     expect(feed[0].type).toBe('priority_flag');
   });
   it('chat answers from live data without an AI provider', async () => {
     const r = await owner.post('/api/chat/message').send({ content: 'Which lead is most overdue?' });
     expect(r.status).toBe(200);
     expect(r.body.content).toMatch(/overdue/i);
-    const hist = (await owner.get('/api/chat/history')).body.messages;
+    const hist = (await owner.get('/api/chat/history')).body.data;
     expect(hist.at(-1).role).toBe('assistant');
   });
   it('recommendation apply is dormant in v1', async () => {
-    const recs = (await owner.get('/api/recommendations')).body;
+    const recs = (await owner.get('/api/recommendations')).body.data;
     expect(recs.length).toBeGreaterThan(0);
     const r = await owner.post(`/api/recommendations/${recs[0].recommendation_id}/apply`);
     expect(r.status).toBe(409);
@@ -265,7 +265,7 @@ describe('tenant isolation', () => {
     const r = await request(app).post('/api/auth/signup').send({ name: 'Other Owner', email: 'other@example.com', password: 'password123', workspaceName: 'Other Co', plan: 'growth' });
     expect(r.status).toBe(200);
     const other = await login('other@example.com', 'password123');
-    expect((await other.get('/api/campaigns')).body).toEqual([]);
+    expect((await other.get('/api/campaigns')).body.data).toEqual([]);
     const [l] = await db.select().from(s.leads).where(eq(s.leads.tenantId, tenantId)).limit(1);
     expect((await other.get(`/api/leads/${l.id}`)).status).toBe(404);
     expect((await other.post(`/api/leads/${l.id}/respond`)).status).toBe(404);

@@ -1,0 +1,54 @@
+# Camplo on a single host (ADL D-7 Docker Compose; D-7a DokPloy wraps this file).
+# Required: JWT_SECRET, ENCRYPTION_KEY, APP_URL, BASE_DOMAIN, POSTGRES_PASSWORD. Everything else is optional (see README).
+services:
+  app:
+    build: .
+    image: camplo:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://camplo:${POSTGRES_PASSWORD}@postgres:5432/camplo
+      DRAGONFLY_URL: redis://dragonfly:6379
+      SEED_DEMO: ${SEED_DEMO:-false}
+    depends_on: [postgres, dragonfly]
+
+  worker:
+    image: camplo:latest
+    restart: unless-stopped
+    command: ["node", "dist/server/worker.js"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://camplo:${POSTGRES_PASSWORD}@postgres:5432/camplo
+      DRAGONFLY_URL: redis://dragonfly:6379
+      SEED_DEMO: "false"
+    depends_on: [app]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: camplo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: camplo
+    volumes: [pgdata:/var/lib/postgresql/data]
+
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    restart: unless-stopped
+    ulimits: { memlock: -1 }
+    volumes: [dragonfly:/data]
+
+  # D-26: automatic HTTPS for the app, every <page>.BASE_DOMAIN subdomain and verified custom domains (on-demand TLS).
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      APP_HOST: ${APP_HOST}
+    volumes: [./Caddyfile:/etc/caddy/Caddyfile:ro, caddy_data:/data]
+    depends_on: [app]
+
+volumes:
+  pgdata:
+  dragonfly:
+  caddy_data:

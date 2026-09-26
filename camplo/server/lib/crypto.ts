@@ -1,32 +1,61 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { config, isProd } from './config.js';
 
-let cachedKey: Buffer | null = null;
-function key(): Buffer {
-  if (cachedKey) return cachedKey;
-  const raw = config.encryptionKey;
-  if (raw) {
-    const buf = /^[0-9a-f]{64}$/i.test(raw) ? Buffer.from(raw, 'hex') : Buffer.from(raw, 'base64');
-    if (buf.length !== 32) throw new Error('ENCRYPTION_KEY must decode to 32 bytes');
-    cachedKey = buf;
-  } else {
-    if (isProd) throw new Error('ENCRYPTION_KEY is required in production');
-    cachedKey = createHash('sha256').update('camplo-dev-only-encryption-key').digest();
-  }
-  return cachedKey;
+import { hkdfSync } from 'node:crypto';
+
+/** Which secret family a value belongs to — each is sealed with its own key (ADL §5). */
+export type KeyPurpose = 'general' | 'ai' | 'webhook' | 'integration' | 'telegram';
+const PURPOSES: readonly KeyPurpose[] = ['general', 'ai', 'webhook', 'integration', 'telegram'];
+
+function toKey(raw: string, name: string, strict: boolean): Buffer {
+  if (/^[0-9a-f]{64}$/i.test(raw)) return Buffer.from(raw, 'hex');
+  const b64 = Buffer.from(raw, 'base64');
+  if (b64.length === 32) return b64;
+  if (strict) throw new Error(`${name} must decode to 32 bytes`);
+  return createHash('sha256').update(raw).digest(); // passphrase-style secret
 }
 
-/** AES-256-GCM. Output: base64(iv[12] | tag[16] | ciphertext). */
-export function encrypt(plain: string): string {
+let master: Buffer | null = null;
+function masterKey(): Buffer {
+  if (master) return master;
+  if (config.encryptionKey) master = toKey(config.encryptionKey, 'ENCRYPTION_KEY', true);
+  else {
+    if (isProd) throw new Error('ENCRYPTION_KEY is required in production');
+    master = createHash('sha256').update('camplo-dev-only-encryption-key').digest();
+  }
+  return master;
+}
+
+const keys = new Map<KeyPurpose, Buffer>();
+function key(purpose: KeyPurpose): Buffer {
+  const hit = keys.get(purpose);
+  if (hit) return hit;
+  let k: Buffer;
+  const dedicated = purpose === 'general' ? '' : config.encryptionKeys[purpose];
+  if (dedicated) k = toKey(dedicated, `${purpose} encryption secret`, false);
+  else if (purpose === 'general') k = masterKey();
+  else k = Buffer.from(hkdfSync('sha256', masterKey(), Buffer.alloc(0), `camplo:${purpose}`, 32));
+  keys.set(purpose, k);
+  return k;
+}
+
+/**
+ * AES-256-GCM. Output: `<purpose>.` + base64(iv[12] | tag[16] | ciphertext). The purpose prefix selects the key
+ * on decrypt, so rotating one family's secret never touches the others. Unprefixed values are legacy `general`.
+ */
+export function encrypt(plain: string, purpose: KeyPurpose = 'general'): string {
   const iv = randomBytes(12);
-  const c = createCipheriv('aes-256-gcm', key(), iv);
+  const c = createCipheriv('aes-256-gcm', key(purpose), iv);
   const body = Buffer.concat([c.update(plain, 'utf8'), c.final()]);
-  return Buffer.concat([iv, c.getAuthTag(), body]).toString('base64');
+  return `${purpose}.${Buffer.concat([iv, c.getAuthTag(), body]).toString('base64')}`;
 }
 
 export function decrypt(blob: string): string {
-  const buf = Buffer.from(blob, 'base64');
-  const d = createDecipheriv('aes-256-gcm', key(), buf.subarray(0, 12));
+  const dot = blob.indexOf('.');
+  const tag = dot > 0 ? blob.slice(0, dot) : '';
+  const purpose = (PURPOSES as readonly string[]).includes(tag) ? (tag as KeyPurpose) : 'general';
+  const buf = Buffer.from(purpose === tag ? blob.slice(dot + 1) : blob, 'base64');
+  const d = createDecipheriv('aes-256-gcm', key(purpose), buf.subarray(0, 12));
   d.setAuthTag(buf.subarray(12, 28));
   return Buffer.concat([d.update(buf.subarray(28)), d.final()]).toString('utf8');
 }

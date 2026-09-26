@@ -26,6 +26,14 @@ export interface Message { role: 'user' | 'assistant'; content: string }
 export interface CompletionRequest {
   tenantId: string; plan: Plan; workload: Workload; taskType: TaskType;
   system: string; messages: Message[]; maxTokens?: number; json?: boolean;
+  /** Overrides the per-workload timeout (e.g. 5 minutes for retrospectives). */
+  timeoutMs?: number;
+}
+
+/** ADL D-31 / §6: panel-level work gives up after AI_PANEL_TIMEOUT_SECONDS (10s); deep/strategic after 30s. */
+function timeoutFor(r: CompletionRequest): number {
+  if (r.timeoutMs) return r.timeoutMs;
+  return r.workload === 'quick' || r.workload === 'standard' ? config.aiPanelTimeoutSeconds * 1000 : 30_000;
 }
 export interface Completion { text: string; model: string; byok: boolean; inputTokens: number; outputTokens: number; costUsd: number }
 
@@ -56,7 +64,7 @@ const OPENAI_COMPAT: Record<string, string> = {
 interface Target { provider: string; model: string; apiKey: string; byok: boolean }
 
 async function callAnthropic(t: Target, r: CompletionRequest): Promise<Omit<Completion, 'byok' | 'costUsd'>> {
-  const client = new Anthropic({ apiKey: t.apiKey, maxRetries: 1, timeout: 120_000 });
+  const client = new Anthropic({ apiKey: t.apiKey, maxRetries: 0, timeout: timeoutFor(r) });
   const params: Anthropic.MessageCreateParamsNonStreaming = {
     model: t.model,
     max_tokens: r.maxTokens ?? 16000,
@@ -87,7 +95,7 @@ async function callOpenAICompatible(t: Target, r: CompletionRequest, baseUrl: st
       messages: [{ role: 'system', content: r.system }, ...r.messages],
       ...(r.json ? { response_format: { type: 'json_object' } } : {}),
     }),
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(timeoutFor(r)),
   });
   if (!res.ok) throw new Error(`provider_http_${res.status}`);
   const j = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number }; model?: string };

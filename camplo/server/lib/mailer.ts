@@ -1,4 +1,5 @@
-/** Transactional email. Uses the Resend HTTP API when RESEND_API_KEY is set; otherwise logs. */
+/** Transactional email: SMTP when SMTP_HOST is set (ADL §5), else the Resend HTTP API, else console. */
+import type { Transporter } from 'nodemailer';
 import { config } from './config.js';
 
 export interface Mail { to: string; subject: string; text: string; html?: string }
@@ -8,6 +9,15 @@ export const outbox: Mail[] = [];
 export async function sendMail(m: Mail): Promise<void> {
   outbox.push(m);
   if (outbox.length > 200) outbox.shift();
+  if (config.smtp.host) {
+    try {
+      const t = await smtp();
+      await t.sendMail({ from: config.emailFrom, to: m.to, subject: m.subject, text: m.text, html: m.html });
+    } catch (e) {
+      console.error('[mail] smtp send failed', (e as Error).message);
+    }
+    return;
+  }
   if (!config.resendApiKey) {
     if (config.env !== 'test') console.info(`[mail] to=${m.to} subject="${m.subject}"`);
     return;
@@ -18,6 +28,17 @@ export async function sendMail(m: Mail): Promise<void> {
     body: JSON.stringify({ from: config.emailFrom, to: m.to, subject: m.subject, text: m.text, html: m.html }),
   });
   if (!res.ok) console.error(`[mail] send failed ${res.status}`);
+}
+
+let transport: Transporter | null = null;
+async function smtp(): Promise<Transporter> {
+  if (transport) return transport;
+  const { createTransport } = await import('nodemailer');
+  transport = createTransport({
+    host: config.smtp.host, port: config.smtp.port, secure: config.smtp.port === 465,
+    ...(config.smtp.user ? { auth: { user: config.smtp.user, pass: config.smtp.pass } } : {}),
+  });
+  return transport;
 }
 
 export const emails = {
@@ -36,6 +57,14 @@ export const emails = {
   dailySummary: (to: string, lines: string[], avg: string): Mail => ({
     to, subject: `Camplo Daily Summary — ${lines.length} leads unacknowledged`,
     text: `Unacknowledged leads:\n${lines.join('\n')}\n\nAverage response time today: ${avg}\n\nGo to Inbox: ${config.appUrl}/#/leads`,
+  }),
+  newLead: (to: string, leadName: string, deployment: string, link: string): Mail => ({
+    to, subject: `New lead: ${leadName}`,
+    text: `${leadName} just arrived from ${deployment}. The SLA clock is running.\n\nOpen lead: ${link}`,
+  }),
+  magicLink: (to: string, link: string): Mail => ({
+    to, subject: 'Your Camplo sign-in link',
+    text: `Click the link below to sign in to Camplo. It works once and expires in ${Math.round(config.magicLinkExpirySeconds / 60)} minutes.\n\n${link}\n\nIf you didn't ask for this, you can ignore this email.`,
   }),
   activated: (to: string): Mail => ({
     to, subject: 'Your Camplo account is active', text: `Your account is active. Set up your account: ${config.appUrl}/#/login`,

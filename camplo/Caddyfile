@@ -1,0 +1,17 @@
+# Certificates are only issued for hosts Camplo approves: live page subdomains and verified custom domains.
+{
+	on_demand_tls {
+		ask http://app:4173/api/caddy/ask
+	}
+}
+
+{$APP_HOST} {
+	reverse_proxy app:4173
+}
+
+https:// {
+	tls {
+		on_demand
+	}
+	reverse_proxy app:4173
+}

@@ -32,7 +32,10 @@ function dbStorage(db: DB): Storage {
 
 async function s3Storage(): Promise<Storage> {
   const s3 = await import('@aws-sdk/client-s3');
-  const client = new s3.S3Client({ endpoint: config.s3Endpoint, region: process.env.AWS_REGION ?? 'auto' });
+  const client = new s3.S3Client({
+    endpoint: config.s3Endpoint, region: config.s3Region,
+    ...(config.s3AccessKey ? { credentials: { accessKeyId: config.s3AccessKey, secretAccessKey: config.s3SecretKey } } : {}),
+  });
   const Bucket = config.s3Bucket;
   return {
     async put(Key, Body, ContentType) { await client.send(new s3.PutObjectCommand({ Bucket, Key, Body, ContentType })); },

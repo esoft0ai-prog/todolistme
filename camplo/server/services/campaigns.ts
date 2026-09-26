@@ -11,6 +11,7 @@ import { DAY, formatDuration, hasFeature, orderInsights, PLAN_LIMITS, speedColor
 import { campaignCpl, campaignStats, health, type CampaignStats } from './metrics.js';
 import { emit, fireOutbound, logCampaign, logWorkspace, remember } from './effects.js';
 import { complete as llm } from '../ai/router.js';
+import { storageFor } from '../lib/storage.js';
 
 type Campaign = typeof campaigns.$inferSelect;
 
@@ -63,7 +64,7 @@ export async function createCampaign(ctx: AuthedContext, input: {
   const [{ n }] = await ctx.db.select({ n: sql<number>`count(*)` }).from(campaigns)
     .where(and(eq(campaigns.tenantId, ctx.tenantId), sql`${campaigns.status} <> 'complete'`));
   if (Number(n) >= PLAN_LIMITS[ctx.plan].campaigns) {
-    throw fail.forbidden(`Your plan includes ${PLAN_LIMITS[ctx.plan].campaigns} active campaigns. Upgrade to add more.`, 'plan_limit', { plan: ctx.plan === 'starter' ? 'growth' : 'watchtower' });
+    throw fail.planLimit(`Your plan includes ${PLAN_LIMITS[ctx.plan].campaigns} active campaigns. Upgrade to add more.`, ctx.plan === 'starter' ? 'growth' : 'watchtower');
   }
   const [c] = await ctx.db.insert(campaigns).values({
     tenantId: ctx.tenantId, name: input.name.trim(), description: input.description ?? null, ownerId: ctx.user.id,
@@ -95,7 +96,7 @@ export async function perfSnapshot(db: DB, tenantId: string, campaignId: string)
 
 export async function updateCampaign(ctx: AuthedContext, id: string, patch: {
   name?: string; description?: string | null; dailySpend?: number | null; budget?: number | null; cplThreshold?: number | null; startDate?: string;
-  change?: { type: 'budget' | 'audience' | 'creative' | 'messaging' | 'page'; description: string };
+  status?: 'paused' | 'active'; change?: { type: 'budget' | 'audience' | 'creative' | 'messaging' | 'page'; description: string };
 }) {
   assertRole(ctx, 'owner', 'admin');
   const c = await loadCampaign(ctx, id);
@@ -105,6 +106,12 @@ export async function updateCampaign(ctx: AuthedContext, id: string, patch: {
   if (patch.name !== undefined && patch.name.trim() !== c.name) { set.name = patch.name.trim(); logs.push(`Renamed to "${set.name}"`); }
   if (patch.description !== undefined) { set.description = patch.description; logs.push('Campaign brief updated'); }
   if (patch.startDate !== undefined) set.startDate = patch.startDate;
+  if (patch.status !== undefined) {
+    if (c.status === 'complete') throw fail.bad('Completed campaigns cannot be paused or resumed.');
+    // Pausing takes the campaign out of Health Pulse tracking; resuming hands status back to the pulse sweep.
+    if (patch.status === 'paused' && c.status !== 'paused') { set.status = 'paused'; logs.push('Campaign paused'); }
+    if (patch.status === 'active' && c.status === 'paused') { set.status = 'active'; logs.push('Campaign resumed'); }
+  }
   if (patch.dailySpend !== undefined) { set.dailySpend = patch.dailySpend == null ? null : String(patch.dailySpend); logs.push(`Daily spend set to ${patch.dailySpend ?? '—'}`); }
   if (patch.budget !== undefined) { set.budget = patch.budget == null ? null : String(patch.budget); logs.push(`Budget set to ${patch.budget ?? '—'}`); }
   if (patch.cplThreshold !== undefined) { set.cplThreshold = patch.cplThreshold == null ? null : String(patch.cplThreshold); logs.push(`CPL threshold set to ${patch.cplThreshold ?? '—'}`); }
@@ -223,7 +230,7 @@ export async function generateRetrospective(db: DB, tenantId: string, campaignId
   ];
   let observation: string;
   const res = await llm(db, {
-    tenantId, plan: t.plan, workload: 'strategic', taskType: 'retrospective', maxTokens: 1200,
+    tenantId, plan: t.plan, workload: 'strategic', taskType: 'retrospective', maxTokens: 1200, timeoutMs: 5 * 60_000,
     system: 'You are Camplo, a campaign decision engine. Write one paragraph (4-6 sentences) observing what this finished campaign\'s data suggests for the next campaign. Be specific, cite numbers, never invent data, no bullet points.',
     messages: [{ role: 'user', content: facts.join('\n') }],
   });
@@ -240,6 +247,8 @@ export async function generateRetrospective(db: DB, tenantId: string, campaignId
     bestPageId: best?.id ?? null, worstPageId: worst && worst.id !== best?.id ? worst.id : null, aiObservation: observation,
   }).where(eq(campaignRetrospectives.campaignId, campaignId));
   await db.update(campaigns).set({ retrospectiveReady: true }).where(eq(campaigns.id, campaignId));
+  const [r] = await db.select().from(campaignRetrospectives).where(eq(campaignRetrospectives.campaignId, campaignId));
+  try { await storeRetroPdf(db, t, c, r); } catch (e) { console.error('[retro] pdf', (e as Error).message); }
   emit(tenantId, 'workspace:insights', { campaignId });
 }
 
@@ -259,12 +268,19 @@ export async function retrospectiveStatus(ctx: AuthedContext, id: string) {
 export async function retrospective(ctx: AuthedContext, id: string) {
   const { c, r } = await loadRetro(ctx, id);
   if (!r?.generated) return { generated: false as const };
+  return retroView(ctx.db, c, r);
+}
+
+type Retro = typeof campaignRetrospectives.$inferSelect;
+type RetroView = Awaited<ReturnType<typeof retroView>>;
+
+async function retroView(db: DB, c: typeof campaigns.$inferSelect, r: Retro) {
   const pageName = async (pid: string | null) => {
     if (!pid) return null;
-    const [p] = await ctx.db.select({ name: deployments.name }).from(deployments).where(eq(deployments.id, pid));
+    const [p] = await db.select({ name: deployments.name }).from(deployments).where(eq(deployments.id, pid));
     if (!p) return null;
-    const [v] = await ctx.db.select({ n: sql<number>`coalesce(sum(${pageVisits.visits}),0)` }).from(pageVisits).where(eq(pageVisits.deploymentId, pid));
-    const [l] = await ctx.db.select({ n: sql<number>`count(*)` }).from(leads).where(eq(leads.deploymentId, pid));
+    const [v] = await db.select({ n: sql<number>`coalesce(sum(${pageVisits.visits}),0)` }).from(pageVisits).where(eq(pageVisits.deploymentId, pid));
+    const [l] = await db.select({ n: sql<number>`count(*)` }).from(leads).where(eq(leads.deploymentId, pid));
     return { name: p.name, conversionRate: Number(v.n) ? Number(l.n) / Number(v.n) : null };
   };
   return {
@@ -277,15 +293,39 @@ export async function retrospective(ctx: AuthedContext, id: string) {
 }
 
 /** Dark-themed, client-ready PDF (Design Spec §17.8). */
+const pdfName = (campaignName: string) => `${campaignName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-retrospective.pdf`;
+
+/** D-NEW-14: served from object storage (pdf_url); rendered and stored on first request if generation couldn't. */
 export async function retrospectivePdf(ctx: AuthedContext, id: string): Promise<{ filename: string; data: Buffer }> {
-  const r = await retrospective(ctx, id);
-  if (!r.generated) throw fail.notFound('Retrospective is still generating.');
+  const { c, r } = await loadRetro(ctx, id);
+  if (!r?.generated) throw fail.notFound('Retrospective is still generating.');
+  const st = await storageFor(ctx.db);
+  const stored = r.pdfUrl ? await st.get(r.pdfUrl) : null;
+  if (stored) return { filename: pdfName(c.name), data: stored.data };
+  const data = await storeRetroPdf(ctx.db, ctx.tenant, c, r);
+  return { filename: pdfName(c.name), data };
+}
+
+async function storeRetroPdf(db: DB, t: typeof tenants.$inferSelect, c: typeof campaigns.$inferSelect, r: Retro): Promise<Buffer> {
+  const data = await renderRetroPdf(db, t, await retroView(db, c, r));
+  const key = `retros/${t.id}/${c.id}.pdf`;
+  await (await storageFor(db)).put(key, data, 'application/pdf');
+  await db.update(campaignRetrospectives).set({ pdfUrl: key }).where(eq(campaignRetrospectives.id, r.id));
+  return data;
+}
+
+/** Dark, client-ready PDF with the operator's logo at the top (D-NEW-21). */
+async function renderRetroPdf(db: DB, t: typeof tenants.$inferSelect, r: RetroView): Promise<Buffer> {
+  const logo = t.logoUrl?.startsWith('/api/files/') ? await (await storageFor(db)).get(t.logoUrl.slice('/api/files/'.length)) : null;
   const doc = new PDFDocument({ size: 'A4', margin: 56 });
   const chunks: Buffer[] = [];
   doc.on('data', (b: Buffer) => chunks.push(b));
   const done = new Promise<void>((res) => doc.on('end', () => res()));
   doc.rect(0, 0, doc.page.width, doc.page.height).fill('#0B0B0F');
-  doc.fillColor('#E8E8F0').font('Helvetica-Bold').fontSize(22).text(ctx.tenant.businessName, 56, 56);
+  if (logo) {
+    try { doc.image(logo.data, 56, 48, { fit: [140, 44] }); doc.y = 100; } catch { /* unreadable image: fall back to the name */ }
+  }
+  doc.fillColor('#E8E8F0').font('Helvetica-Bold').fontSize(22).text(t.businessName, 56, logo ? doc.y : 56);
   doc.moveDown(0.4).fillColor('#8888A8').font('Helvetica').fontSize(11).text('Campaign Retrospective');
   doc.moveDown(1.2).fillColor('#E8E8F0').font('Helvetica-Bold').fontSize(18).text(r.campaignName);
   doc.fillColor('#8888A8').font('Helvetica').fontSize(11).text(`${r.startDate} – ${r.endDate} · ${r.daysActive} days active`);
@@ -311,7 +351,7 @@ export async function retrospectivePdf(ctx: AuthedContext, id: string): Promise<
   doc.fillColor('#55557A').font('Helvetica').fontSize(8).text('Powered by Camplo', 56, doc.page.height - 72, { align: 'center', width: doc.page.width - 112 });
   doc.end();
   await done;
-  return { filename: `${r.campaignName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-retrospective.pdf`, data: Buffer.concat(chunks) };
+  return Buffer.concat(chunks);
 }
 
 // ------------------------------------------------------------ share links + public view

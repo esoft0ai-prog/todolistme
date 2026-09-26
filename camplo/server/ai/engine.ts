@@ -15,6 +15,7 @@
 import { and, eq, gte, isNull, lt, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
+import { config } from '../lib/config.js';
 import {
   aiProviderConfigs, campaignChanges, campaignRecommendations, campaigns, deployments, insights, integrations, leads, pageVisits, tenants, webhookSources,
 } from '../db/schema.js';
@@ -83,7 +84,7 @@ export async function level1(db: DB, t: Tenant): Promise<number> {
         }
       }
       // 72-hour early warning (touchpoint 8)
-      if (hasFeature(plan, 'early_warning') && d.deployedAt && Date.now() - d.deployedAt.getTime() < 72 * HOUR && Date.now() - d.deployedAt.getTime() > 24 * HOUR && !d.earlyWarningTriggered) {
+      if (hasFeature(plan, 'early_warning') && d.deployedAt && Date.now() - d.deployedAt.getTime() < config.earlyWarningHours * HOUR && Date.now() - d.deployedAt.getTime() > 24 * HOUR && !d.earlyWarningTriggered) {
         const [v] = await db.select({ n: sql<number>`coalesce(sum(${pageVisits.visits}),0)` }).from(pageVisits).where(eq(pageVisits.deploymentId, d.id));
         const [l] = await db.select({ n: sql<number>`count(*)` }).from(leads).where(eq(leads.deploymentId, d.id));
         const visits = Number(v.n), n = Number(l.n);

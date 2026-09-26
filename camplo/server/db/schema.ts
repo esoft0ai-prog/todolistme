@@ -590,7 +590,7 @@ export const sessions = pgTable('sessions', {
 export const oneTimeTokens = pgTable('one_time_tokens', {
   id: id(),
   tenantId: tenantId(),
-  purpose: varchar('purpose', { length: 30 }).notNull(), // 'password_reset' | 'acknowledge'
+  purpose: varchar('purpose', { length: 30 }).notNull(), // 'password_reset' | 'acknowledge' | 'magic_login'
   tokenHash: varchar('token_hash', { length: 128 }).notNull(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
   leadId: uuid('lead_id').references(() => leads.id, { onDelete: 'cascade' }),

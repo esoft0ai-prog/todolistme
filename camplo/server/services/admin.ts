@@ -3,11 +3,13 @@
  * not tenant users: they sign in with email + password + TOTP and receive a
  * short-lived admin JWT. They never see lead or deployment content, nor AI keys.
  */
+import { scheduleSuspensionGrace, SUSPENDED_OFFLINE } from '../jobs/scheduler.js';
+import { planForProduct } from '../lib/polar.js';
 import { createHmac } from 'node:crypto';
-import { desc, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, sql } from 'drizzle-orm';
 import { SignJWT, jwtVerify } from 'jose';
 import type { DB } from '../db/client.js';
-import { adminActionLog, aiProviderConfigs, deployments, leads, superAdmins, tenants, webhookSources } from '../db/schema.js';
+import { adminActionLog, aiProviderConfigs, campaignRetrospectives, deployments, leads, superAdmins, tenants, webhookSources } from '../db/schema.js';
 import { checkPassword, hashPassword } from '../lib/auth.js';
 import { config } from '../lib/config.js';
 import { decrypt, encrypt, safeEqual } from '../lib/crypto.js';
@@ -50,7 +52,7 @@ export async function ensureSuperAdmin(db: DB) {
   if (a) return;
   await db.insert(superAdmins).values({
     email: config.superAdminEmail, passwordHash: await hashPassword(config.superAdminPassword),
-    totpSecretEncrypted: process.env.SUPER_ADMIN_TOTP_SECRET ? encrypt(process.env.SUPER_ADMIN_TOTP_SECRET) : null,
+    totpSecretEncrypted: config.adminTotpSecret ? encrypt(config.adminTotpSecret) : null,
   });
 }
 
@@ -110,7 +112,12 @@ export async function setAccountStatus(db: DB, adminId: string, id: string, stat
   }).where(eq(tenants.id, id)).returning();
   if (!t) throw fail.notFound('Account not found.');
   await logAdmin(db, adminId, status === 'active' ? 'activate' : status === 'suspended' ? 'suspend' : 'flag', id);
-  if (status === 'active') { await ensureBank(t.id, t.businessName); await sendMail(emails.activated(t.ownerEmail)); }
+  if (status === 'active') {
+    // Pages taken offline by the suspension grace job come back; their files were never removed (D-2).
+    await db.update(deployments).set({ status: 'ready', failureReason: null }).where(and(eq(deployments.tenantId, t.id), eq(deployments.status, 'deleted'), eq(deployments.failureReason, SUSPENDED_OFFLINE)));
+    await ensureBank(t.id, t.businessName); await sendMail(emails.activated(t.ownerEmail));
+  }
+  if (status === 'suspended') await scheduleSuspensionGrace(t.id);
   return { ok: true, status };
 }
 
@@ -124,6 +131,17 @@ export async function setAccountPricing(db: DB, adminId: string, id: string, mon
 export async function addAccountNote(db: DB, adminId: string, id: string, note: string) {
   await logAdmin(db, adminId, 'note', id, note);
   return { ok: true };
+}
+
+/** D-NEW-14: retrospectives are permanent; only the Super Admin can explicitly regenerate one. */
+export async function regenerateRetrospective(db: DB, adminId: string, tenantId: string, campaignId: string) {
+  const [r] = await db.update(campaignRetrospectives).set({ generated: false, generatedAt: null, pdfUrl: null })
+    .where(and(eq(campaignRetrospectives.tenantId, tenantId), eq(campaignRetrospectives.campaignId, campaignId))).returning();
+  if (!r) throw fail.notFound('No retrospective exists for this campaign.');
+  await logAdmin(db, adminId, 'regenerate_retrospective', tenantId, `Campaign ${campaignId}`);
+  const { enqueue } = await import('../jobs/scheduler.js');
+  await enqueue('retrospective-generation', { tenantId, campaignId });
+  return { ok: true, generated: false };
 }
 
 export async function systemHealth(db: DB, queueDepth: number) {
@@ -168,11 +186,6 @@ export function verifyPolarSignature(raw: Buffer, headers: Record<string, string
   return sig.split(' ').some((s) => safeEqual(s.replace(/^v1,/, ''), expected));
 }
 
-const PLAN_FROM_PRODUCT = (name: string | undefined): (typeof tenants.$inferSelect)['plan'] | null => {
-  const n = (name ?? '').toLowerCase();
-  return n.includes('watchtower') ? 'watchtower' : n.includes('growth') ? 'growth' : n.includes('agency') ? 'agency' : n.includes('starter') ? 'starter' : null;
-};
-
 export async function handlePolarEvent(db: DB, evt: { type: string; data: any }) {
   const d = evt.data ?? {};
   const email: string | undefined = d.customer?.email ?? d.customer_email ?? d.user?.email;
@@ -181,7 +194,7 @@ export async function handlePolarEvent(db: DB, evt: { type: string; data: any })
     ? await db.select().from(tenants).where(eq(tenants.id, tenantId))
     : email ? await db.select().from(tenants).where(eq(tenants.ownerEmail, email.toLowerCase())) : [];
   if (!t) return { handled: false };
-  const plan = PLAN_FROM_PRODUCT(d.product?.name ?? d.subscription?.product?.name);
+  const plan = planForProduct(d.product_id ?? d.product?.id, d.metadata?.plan, d.product?.name ?? d.subscription?.product?.name);
   switch (evt.type) {
     case 'order.created':
     case 'checkout.created':
@@ -201,6 +214,7 @@ export async function handlePolarEvent(db: DB, evt: { type: string; data: any })
     case 'subscription.revoked':
       await db.update(tenants).set({ status: 'suspended', suspendedAt: new Date() }).where(eq(tenants.id, t.id));
       await db.insert(adminActionLog).values({ adminId: 'polar', action: 'suspend', targetTenantId: t.id, note: 'Subscription revoked' });
+      await scheduleSuspensionGrace(t.id);
       break;
     default:
       break;

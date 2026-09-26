@@ -6,7 +6,11 @@
 import { and, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { campaigns, leads, notes, teamNoteRecipients, teamNotes, users } from '../db/schema.js';
 import { fail, assertFeature, assertRole, type AuthedContext } from '../lib/orpc.js';
-import { HOUR, noteEditable, NOTE_EDIT_WINDOW_MS } from '../domain/rules.js';
+import { HOUR, noteEditable as noteEditableAt } from '../domain/rules.js';
+import { config } from '../lib/config.js';
+
+const EDIT_WINDOW_MS = config.noteEditWindowSeconds * 1000;
+const noteEditable = (createdAt: Date, authorId: string, userId: string) => noteEditableAt(createdAt, authorId, userId, new Date(), EDIT_WINDOW_MS);
 import { emit, logCampaign, notify } from './effects.js';
 import { loadCampaign } from './campaigns.js';
 import { loadLead } from './leads.js';
@@ -19,7 +23,7 @@ function serialize(n: Note & { authorName: string | null }, userId: string) {
   return {
     id: n.id, type: n.noteType, entityId: n.entityId, authorId: n.authorId, authorName: n.authorName ?? 'Unknown', content: n.content,
     title: n.title, meetingDate: n.meetingDate, via: n.via, editedAt: n.editedAt, createdAt: n.createdAt,
-    editable, editableUntil: editable ? new Date(n.createdAt.getTime() + NOTE_EDIT_WINDOW_MS) : null,
+    editable, editableUntil: editable ? new Date(n.createdAt.getTime() + EDIT_WINDOW_MS) : null,
   };
 }
 
@@ -100,7 +104,7 @@ async function hydrateTeamNotes(ctx: AuthedContext, rows: Array<typeof teamNotes
       deadline: t.timeBoundDeadline, deadlineStatus: t.timeBoundStatus,
       addressedToMe: !!mine, unread: !!mine && !mine.r.readAt, canAcknowledge: !!mine && t.timeBoundStatus === 'pending',
       approaching: t.timeBoundStatus === 'pending' && !!t.timeBoundDeadline && t.timeBoundDeadline.getTime() - now < HOUR,
-      editable, editableUntil: editable ? new Date(t.createdAt.getTime() + NOTE_EDIT_WINDOW_MS) : null,
+      editable, editableUntil: editable ? new Date(t.createdAt.getTime() + EDIT_WINDOW_MS) : null,
     };
   });
 }

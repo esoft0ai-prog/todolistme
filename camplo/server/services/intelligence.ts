@@ -78,6 +78,13 @@ export async function listRecommendations(ctx: AuthedContext, campaignId?: strin
   return serializeRecs(ctx, rows.filter((r) => recommendationLevelAllowed(ctx.plan, r.level)));
 }
 
+export async function getRecommendation(ctx: AuthedContext, id: string) {
+  const [r] = await ctx.db.select().from(campaignRecommendations).where(and(eq(campaignRecommendations.tenantId, ctx.tenantId), eq(campaignRecommendations.id, id)));
+  if (!r || !recommendationLevelAllowed(ctx.plan, r.level)) throw fail.notFound('Recommendation not found.');
+  const [out] = await serializeRecs(ctx, [r]);
+  return { ...out, status: r.status, surfaced_at: r.surfacedAt, actioned_at: r.actionedAt, outcome_measured: r.outcomeMeasured, outcome_data: r.outcomeData };
+}
+
 export async function dismissRecommendation(ctx: AuthedContext, id: string) {
   const [r] = await ctx.db.update(campaignRecommendations).set({ status: 'dismissed', actionedAt: new Date() })
     .where(and(eq(campaignRecommendations.tenantId, ctx.tenantId), eq(campaignRecommendations.id, id), eq(campaignRecommendations.status, 'surfaced'))).returning();

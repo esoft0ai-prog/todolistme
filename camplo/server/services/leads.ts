@@ -138,6 +138,8 @@ export async function respond(ctx: AuthedContext, id: string) {
 export async function afterRespond(db: DB, tenant: Tenant, l: Lead, user: { id: string; name: string }) {
   const tenantId = tenant.id;
   const waited = customerWaitingMs(l);
+  const { cancelJob } = await import('../jobs/scheduler.js');
+  await cancelJob('sla-timers', l.slaJobId); // D-13: the SLA job is cancelled by sla_job_id on respond
   await addLifecycle(db, tenantId, l.id, `Responded — ${user.name}`, 'camplo', l.respondedAt!);
   if (l.campaignId) await logCampaign(db, tenantId, l.campaignId, user.id, `Responded to ${l.fullName} in ${formatDuration(waited)}`);
   remember(db, tenantId, {
@@ -276,13 +278,42 @@ async function createLead(db: DB, tenant: Tenant, input: {
   emit(tenant.id, 'workspace:leads', { type: 'created', leadId: lead.id });
   emit(tenant.id, 'workspace:overdue-count', {});
   if (lead.campaignId) emit(tenant.id, `campaign:${lead.campaignId}:health`, {});
+  // ADL §6 / P-7: SLA timer (delayed job, cancelled on respond) + Telegram notification.
+  const { enqueue, scheduleSlaTimer } = await import('../jobs/scheduler.js');
+  await scheduleSlaTimer(db, tenant, lead);
+  await enqueue('telegram-notifications', { tenantId: tenant.id, leadId: lead.id });
   // Lead-batch event trigger for the AI refresh (20+ leads in 30 minutes).
   const [{ n }] = await db.select({ n: sql<number>`count(*)` }).from(leads).where(and(eq(leads.tenantId, tenant.id), gte(leads.receivedAt, new Date(Date.now() - 30 * MIN))));
-  if (Number(n) === 20) {
-    const { enqueue } = await import('../jobs/scheduler.js');
-    await enqueue('ai-intelligence', { tenantId: tenant.id, reason: 'lead_batch' });
-  }
+  if (Number(n) === 20) await enqueue('ai-intelligence', { tenantId: tenant.id, reason: 'lead_batch' });
   return lead;
+}
+
+/** GET /campaigns/:id/lifecycle/summary — how the campaign's leads progressed across Camplo and connected tools. */
+export async function lifecycleSummary(ctx: AuthedContext, campaignId: string) {
+  const { loadCampaign } = await import('./campaigns.js');
+  await loadCampaign(ctx, campaignId);
+  const scope = and(eq(leadLifecycleEvents.tenantId, ctx.tenantId), eq(leads.campaignId, campaignId));
+  const [tot] = await ctx.db.select({
+    total: sql<number>`count(*)`, external: sql<number>`count(*) filter (where ${leads.hasExternalLifecycleEvents})`,
+    responded: sql<number>`count(*) filter (where ${leads.status} = 'responded')`,
+  }).from(leads).where(and(eq(leads.tenantId, ctx.tenantId), eq(leads.campaignId, campaignId)));
+  const bySource = await ctx.db.select({ source: leadLifecycleEvents.source, events: sql<number>`count(*)`, leads: sql<number>`count(distinct ${leadLifecycleEvents.leadId})` })
+    .from(leadLifecycleEvents).innerJoin(leads, eq(leads.id, leadLifecycleEvents.leadId)).where(scope).groupBy(leadLifecycleEvents.source);
+  const stages = await ctx.db.select({ event: leadLifecycleEvents.event, source: leadLifecycleEvents.source, milestone: sql<boolean>`bool_or(${leadLifecycleEvents.isMilestone})`, leads: sql<number>`count(distinct ${leadLifecycleEvents.leadId})` })
+    .from(leadLifecycleEvents).innerJoin(leads, eq(leads.id, leadLifecycleEvents.leadId))
+    .where(and(scope, sql`${leadLifecycleEvents.source} <> 'camplo'`)).groupBy(leadLifecycleEvents.event, leadLifecycleEvents.source)
+    .orderBy(desc(sql`count(distinct ${leadLifecycleEvents.leadId})`)).limit(12);
+  const [last] = await ctx.db.select({ at: sql<Date | null>`max(${leadLifecycleEvents.eventTimestamp})` }).from(leadLifecycleEvents).innerJoin(leads, eq(leads.id, leadLifecycleEvents.leadId))
+    .where(and(scope, sql`${leadLifecycleEvents.source} <> 'camplo'`));
+  const total = Number(tot.total), external = Number(tot.external);
+  return {
+    campaign_id: campaignId, total_leads: total, responded: Number(tot.responded),
+    leads_with_external_events: external, external_coverage_rate: total ? external / total : null,
+    by_source: bySource.map((s) => ({ source: s.source, events: Number(s.events), leads: Number(s.leads) })),
+    stages: stages.map((s) => ({ event: s.event, source: s.source, is_milestone: !!s.milestone, leads: Number(s.leads) })),
+    milestones: stages.filter((s) => s.milestone).map((s) => ({ event: s.event, source: s.source, leads: Number(s.leads) })),
+    last_external_event_at: last?.at ?? null,
+  };
 }
 
 /** POST /api/v1/ingest/:tenantId/:deploymentId — per-deployment HMAC-signed webhook. */
@@ -357,7 +388,7 @@ export async function createAckToken(db: DB, tenantId: string, leadId: string, u
     tenantId, purpose: 'acknowledge', tokenHash: sha256(token), leadId, userId,
     expiresAt: new Date(Date.now() + config.acknowledgmentLinkExpirySeconds * 1000),
   });
-  return `${config.appUrl}/#/acknowledge?token=${token}`;
+  return `${config.appUrl}/api/acknowledge/${token}`; // ADL §4 public link → acknowledge screen
 }
 
 async function loadAck(db: DB, token: string) {

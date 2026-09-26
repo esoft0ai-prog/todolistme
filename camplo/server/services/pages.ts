@@ -4,6 +4,7 @@
  * or a verified custom domain). Static files only — nothing on a hosted page
  * ever executes server-side.
  */
+import { enqueue, scheduleEarlyWarningClose, usesQueues } from '../jobs/scheduler.js';
 import AdmZip from 'adm-zip';
 import { resolveCname } from 'node:dns/promises';
 import { randomUUID } from 'node:crypto';
@@ -15,7 +16,7 @@ import { config } from '../lib/config.js';
 import { decrypt, encrypt, hmacHex, randomToken } from '../lib/crypto.js';
 import { contentTypeFor, storageFor } from '../lib/storage.js';
 import { DAY, earlyWarningActive, hasRollbackAvailable, PLAN_LIMITS, webhookState } from '../domain/rules.js';
-import { fireOutbound, logCampaign, logWorkspace } from './effects.js';
+import { emit, fireOutbound, logCampaign, logWorkspace } from './effects.js';
 import { workspaceConversion } from './metrics.js';
 import { loadCampaign } from './campaigns.js';
 
@@ -51,8 +52,8 @@ function serialize(d: Deployment, extra: { campaignName: string | null; hook: ty
     entryFile: d.entryFile, storageSizeBytes: d.storageSizeBytes, deployedAt: d.deployedAt, createdAt: d.createdAt, failureReason: d.failureReason,
     webhook: { state, lastReceivedAt: extra.hook?.lastReceivedAt ?? null, url: webhookUrlFor(d), ...(canManage ? { secret: decrypt(d.webhookSecretEncrypted) } : {}) },
     analytics: { ...a, conversionRate: conv, aboveAverage: conv != null && extra.avgConv != null ? conv > extra.avgConv : null },
-    hasRollbackAvailable: hasRollbackAvailable(d.previousStoragePath, d.previousDeployedAt), previousDeployedAt: d.previousDeployedAt,
-    earlyWarningActive: earlyWarningActive(d.deployedAt), earlyWarningTriggered: d.earlyWarningTriggered,
+    hasRollbackAvailable: hasRollbackAvailable(d.previousStoragePath, d.previousDeployedAt, new Date(), config.rollbackRetentionDays), previousDeployedAt: d.previousDeployedAt,
+    earlyWarningActive: earlyWarningActive(d.deployedAt, new Date(), config.earlyWarningHours), earlyWarningTriggered: d.earlyWarningTriggered,
     domain: extra.domain ? { id: extra.domain.id, name: extra.domain.domainName, status: extra.domain.status } : null,
   };
 }
@@ -153,7 +154,7 @@ export async function uploadPage(ctx: AuthedContext, input: { file: File; name?:
   if (!/\.zip$/i.test(input.file.name)) throw fail.unprocessable('Only .zip files can be uploaded.');
   if (input.file.size > config.maxZipSizeMb * 1024 * 1024) throw fail.tooLarge(`File exceeds ${config.maxZipSizeMb}MB limit`);
   const [{ n }] = await ctx.db.select({ n: sql<number>`count(*)` }).from(deployments).where(and(eq(deployments.tenantId, ctx.tenantId), sql`${deployments.status} <> 'deleted'`));
-  if (Number(n) >= PLAN_LIMITS[ctx.plan].deployments) throw fail.forbidden(`Your plan includes ${PLAN_LIMITS[ctx.plan].deployments} deployments. Additional deployments are $15/month each.`, 'plan_limit', { plan: 'growth' });
+  if (Number(n) >= PLAN_LIMITS[ctx.plan].deployments) throw fail.planLimit(`Your plan includes ${PLAN_LIMITS[ctx.plan].deployments} deployments. Additional deployments are $15/month each.`, 'growth');
   if (input.campaignId) await loadCampaign(ctx, input.campaignId);
   const x = extractZip(Buffer.from(await input.file.arrayBuffer()), input.entryFile);
   if ('needsInput' in x) return { status: 'needs_input' as const, entry_points: x.needsInput };
@@ -161,21 +162,59 @@ export async function uploadPage(ctx: AuthedContext, input: { file: File; name?:
   const name = input.name?.trim() || input.file.name.replace(/\.zip$/i, '');
   const [d] = await ctx.db.insert(deployments).values({
     tenantId: ctx.tenantId, campaignId: input.campaignId ?? null, name, subdomain: `${slugify(input.slug || name)}-${shortId()}`,
-    storagePath: 'pending', entryFile: x.entryFile, servingRoot: x.servingRoot, status: 'processing', webhookSecretEncrypted: encrypt(randomToken(24)),
+    storagePath: 'pending', entryFile: x.entryFile, servingRoot: x.servingRoot, status: 'processing', webhookSecretEncrypted: encrypt(randomToken(24), 'webhook'),
   }).returning();
-  try {
-    const prefix = await storeVersion(ctx.db, ctx.tenantId, d, x);
-    await ctx.db.update(deployments).set({ storagePath: prefix, status: 'ready', storageSizeBytes: x.size, deployedAt: new Date(), earlyWarningActive: true, updatedAt: new Date() }).where(eq(deployments.id, d.id));
-    await ctx.db.update(tenants).set({ storageUsedBytes: sql`${tenants.storageUsedBytes} + ${x.size}` }).where(eq(tenants.id, ctx.tenantId));
-    await ctx.db.insert(webhookSources).values({ tenantId: ctx.tenantId, deploymentId: d.id, campaignId: d.campaignId, label: name, sourceSystem: 'webhook' }).onConflictDoNothing();
-  } catch (e) {
-    await ctx.db.update(deployments).set({ status: 'failed', failureReason: (e as Error).message }).where(eq(deployments.id, d.id));
-    throw fail.unprocessable('Deployment failed. Try again.');
-  }
-  if (d.campaignId) await logCampaign(ctx.db, ctx.tenantId, d.campaignId, ctx.user.id, `Page ${name} deployed by ${ctx.user.name}`);
   await logWorkspace(ctx.db, ctx.tenantId, ctx.user.id, `Deployment uploaded: ${name}`);
-  fireOutbound(ctx.db, ctx.tenantId, 'deployment.ready', { deployment_id: d.id, name, url: pageUrlFor(d) });
+  if (d.campaignId) await logCampaign(ctx.db, ctx.tenantId, d.campaignId, ctx.user.id, `Page ${name} uploaded by ${ctx.user.name}`);
+  // D-19: with a queue, the stored ZIP is processed by the `deployment-processing` worker and the client polls
+  // /pages/upload/:id/status. Without one (serverless), processing runs before responding.
+  if (usesQueues()) {
+    await (await storageFor(ctx.db)).put(uploadKey(ctx.tenantId, d.id), Buffer.from(await input.file.arrayBuffer()), 'application/zip');
+    await enqueue('deployment-processing', { tenantId: ctx.tenantId, deploymentId: d.id, entryFile: x.entryFile });
+    return { uploadId: d.id, id: d.id, status: 'processing' as const };
+  }
+  const r = await finishDeployment(ctx.db, ctx.tenantId, d, x);
+  if (r.status === 'failed') throw fail.unprocessable('Deployment failed. Try again.');
   return { uploadId: d.id, id: d.id, status: 'ready' as const };
+}
+
+const uploadKey = (tenantId: string, id: string) => `uploads/${tenantId}/${id}.zip`;
+
+/** Queue consumer `deployment-processing`: extract the stored ZIP, publish the files, mark READY or FAILED. */
+export async function processDeployment(db: DB, tenantId: string, deploymentId: string, entryFile?: string) {
+  const [d] = await db.select().from(deployments).where(and(eq(deployments.tenantId, tenantId), eq(deployments.id, deploymentId)));
+  if (!d || d.status !== 'processing') return { status: d?.status ?? 'missing' };
+  const st = await storageFor(db);
+  const zip = await st.get(uploadKey(tenantId, deploymentId));
+  if (!zip) {
+    await db.update(deployments).set({ status: 'failed', failureReason: 'Upload not found' }).where(eq(deployments.id, d.id));
+    return { status: 'failed' as const };
+  }
+  let x: Extracted | { needsInput: string[] };
+  try { x = extractZip(zip.data, entryFile); } catch { x = { needsInput: [] }; }
+  const r = 'needsInput' in x
+    ? (await db.update(deployments).set({ status: 'failed', failureReason: 'Could not determine the entry file' }).where(eq(deployments.id, d.id)), { status: 'failed' as const })
+    : await finishDeployment(db, tenantId, d, x);
+  await st.removePrefix(uploadKey(tenantId, deploymentId));
+  return r;
+}
+
+async function finishDeployment(db: DB, tenantId: string, d: Deployment, x: Extracted) {
+  try {
+    const prefix = await storeVersion(db, tenantId, d, x);
+    const deployedAt = new Date();
+    await db.update(deployments).set({ storagePath: prefix, status: 'ready', storageSizeBytes: x.size, deployedAt, earlyWarningActive: true, updatedAt: new Date() }).where(eq(deployments.id, d.id));
+    await db.update(tenants).set({ storageUsedBytes: sql`${tenants.storageUsedBytes} + ${x.size}` }).where(eq(tenants.id, tenantId));
+    await db.insert(webhookSources).values({ tenantId, deploymentId: d.id, campaignId: d.campaignId, label: d.name, sourceSystem: 'webhook' }).onConflictDoNothing();
+    await scheduleEarlyWarningClose(tenantId, d.id, deployedAt);
+  } catch (e) {
+    await db.update(deployments).set({ status: 'failed', failureReason: (e as Error).message }).where(eq(deployments.id, d.id));
+    return { status: 'failed' as const };
+  }
+  if (d.campaignId) await logCampaign(db, tenantId, d.campaignId, null, `Page ${d.name} is live`);
+  emit(tenantId, 'workspace:leads', { type: 'deployment_ready', deploymentId: d.id });
+  fireOutbound(db, tenantId, 'deployment.ready', { deployment_id: d.id, name: d.name, url: pageUrlFor(d) });
+  return { status: 'ready' as const };
 }
 
 export async function uploadStatus(ctx: AuthedContext, id: string) {
@@ -196,6 +235,7 @@ export async function redeploy(ctx: AuthedContext, id: string, file: File) {
     previousStoragePath: d.storagePath, previousDeployedAt: d.deployedAt, storagePath: prefix, entryFile: x.entryFile, servingRoot: x.servingRoot,
     storageSizeBytes: x.size, deployedAt: new Date(), earlyWarningActive: true, earlyWarningTriggered: false, updatedAt: new Date(),
   }).where(eq(deployments.id, id));
+  await scheduleEarlyWarningClose(ctx.tenantId, id, new Date());
   if (d.campaignId) await logCampaign(ctx.db, ctx.tenantId, d.campaignId, ctx.user.id, `Page ${d.name} redeployed by ${ctx.user.name}`);
   return { status: 'ready' as const, id };
 }
@@ -203,7 +243,7 @@ export async function redeploy(ctx: AuthedContext, id: string, file: File) {
 export async function rollback(ctx: AuthedContext, id: string) {
   assertRole(ctx, 'owner', 'admin');
   const d = await loadPage(ctx, id);
-  if (!hasRollbackAvailable(d.previousStoragePath, d.previousDeployedAt)) throw fail.bad('No previous version is available.');
+  if (!hasRollbackAvailable(d.previousStoragePath, d.previousDeployedAt, new Date(), config.rollbackRetentionDays)) throw fail.bad('No previous version is available.');
   await ctx.db.update(deployments).set({
     storagePath: d.previousStoragePath!, previousStoragePath: d.storagePath, deployedAt: d.previousDeployedAt, previousDeployedAt: new Date(), updatedAt: new Date(),
   }).where(eq(deployments.id, id));

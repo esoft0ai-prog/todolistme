@@ -1,4 +1,5 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
+import { createCheckout } from '../lib/polar.js';
 import type { DB } from '../db/client.js';
 import { aiProviderConfigs, oneTimeTokens, sessions, tenants, users } from '../db/schema.js';
 import { checkPassword, cookie, hashPassword, parseCookies, signAccessToken } from '../lib/auth.js';
@@ -52,6 +53,42 @@ export async function login(ctx: BaseContext, email: string, password: string) {
   return { accessToken, next: nextRoute(match.tenant), user: publicUser(match.user), tenant: publicTenant(match.tenant) };
 }
 
+// ------------------------------------------------------------------ magic-link login (ADL P-2: 15 minutes, single use)
+const magicSent = new Map<string, { n: number; until: number }>();
+
+/** Always answers ok (no account enumeration). Sends one link per workspace the email belongs to. */
+export async function requestMagicLink(db: DB, email: string) {
+  const key = email.toLowerCase();
+  const m = magicSent.get(key);
+  if (m && m.until > Date.now() && m.n >= 5) return { ok: true };
+  magicSent.set(key, { n: (m && m.until > Date.now() ? m.n : 0) + 1, until: Date.now() + 15 * 60_000 });
+  const rows = await db.select({ user: users, tenant: tenants }).from(users).innerJoin(tenants, eq(tenants.id, users.tenantId))
+    .where(and(sql`lower(${users.email}) = ${key}`, isNull(users.removedAt), isNull(users.invitationToken)));
+  for (const { user } of rows) {
+    const token = randomToken();
+    await db.insert(oneTimeTokens).values({
+      tenantId: user.tenantId, purpose: 'magic_login', tokenHash: sha256(token), userId: user.id,
+      expiresAt: new Date(Date.now() + config.magicLinkExpirySeconds * 1000),
+    });
+    await sendMail(emails.magicLink(user.email, `${config.appUrl}/#/verify?token=${token}`));
+  }
+  return { ok: true };
+}
+
+/** Exchange a magic-link token for a session. `used_at` is checked and set atomically — a link works exactly once. */
+export async function verifyMagicLink(ctx: BaseContext, token: string) {
+  const [t] = await ctx.db.update(oneTimeTokens).set({ usedAt: new Date() })
+    .where(and(eq(oneTimeTokens.tokenHash, sha256(token)), eq(oneTimeTokens.purpose, 'magic_login'), isNull(oneTimeTokens.usedAt), gt(oneTimeTokens.expiresAt, new Date())))
+    .returning();
+  if (!t?.userId) throw fail.unauthorized('This sign-in link has expired or was already used. Request a new one.');
+  const [row] = await ctx.db.select({ user: users, tenant: tenants }).from(users).innerJoin(tenants, eq(tenants.id, users.tenantId))
+    .where(and(eq(users.id, t.userId), isNull(users.removedAt)));
+  if (!row) throw fail.unauthorized('This sign-in link has expired or was already used. Request a new one.');
+  if (row.tenant.status === 'suspended') throw fail.forbidden(`Your account has been suspended. Contact support at ${config.supportEmail}.`, 'account_suspended');
+  const accessToken = await issueSession(ctx, row.user);
+  return { accessToken, next: nextRoute(row.tenant), user: publicUser(row.user), tenant: publicTenant(row.tenant) };
+}
+
 export async function refresh(ctx: BaseContext) {
   const token = parseCookies(ctx.headers.cookie).camplo_rt;
   if (!token) throw fail.unauthorized();
@@ -80,7 +117,7 @@ export async function signup(ctx: BaseContext, input: { name: string; email: str
   const tenant = await ctx.db.transaction(async (tx) => {
     const [t] = await tx.insert(tenants).values({
       businessName: input.workspaceName, ownerName: input.name, ownerEmail: email, notificationEmail: email, plan: input.plan,
-      status: autoActivate ? 'active' : 'pending_activation', activatedAt: autoActivate ? new Date() : null,
+      status: autoActivate ? 'active' : 'pending_activation', activatedAt: autoActivate ? new Date() : null, storageQuotaBytes: config.defaultStorageQuotaBytes,
     }).returning();
     await tx.insert(users).values({ tenantId: t.id, email, name: input.name, role: 'owner', passwordHash: await hashPassword(input.password), joinedAt: new Date() });
     await tx.insert(aiProviderConfigs).values({ tenantId: t.id });
@@ -89,8 +126,9 @@ export async function signup(ctx: BaseContext, input: { name: string; email: str
   await logWorkspace(ctx.db, tenant.id, null, `Workspace created by ${input.name}`);
   if (autoActivate) await ensureBank(tenant.id, tenant.businessName);
   // Payment happens on Polar checkout; the Polar webhook records the order. No auto-login after signup.
-  const checkoutUrl = process.env[`POLAR_CHECKOUT_URL_${input.plan.toUpperCase()}`] ?? null;
-  return { next: autoActivate ? '/login' : '/pending', checkoutUrl: checkoutUrl ? `${checkoutUrl}?customer_email=${encodeURIComponent(email)}` : null };
+  let checkoutUrl: string | null = null;
+  try { checkoutUrl = await createCheckout({ plan: input.plan, email, tenantId: tenant.id }); } catch (e) { console.error('[polar]', (e as Error).message); }
+  return { next: autoActivate ? '/login' : '/pending', checkoutUrl };
 }
 
 /** Never confirms or denies whether the account exists. */

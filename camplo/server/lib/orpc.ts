@@ -29,6 +29,8 @@ export const fail = {
   unauthorized: (message = 'Session expired. Please log in again.') => new ORPCError('UNAUTHORIZED', { message }),
   forbidden: (message = "You don't have access to this.", reason?: string, extra: Record<string, unknown> = {}) =>
     new ORPCError('FORBIDDEN', { message, data: { reason, ...extra } }),
+  /** ADL D-NEW-9: a feature or limit above the workspace's plan → 403 { reason: 'plan_limit', required_plan }. */
+  planLimit: (message: string, requiredPlan: Plan) => new ORPCError('FORBIDDEN', { message, data: { reason: 'plan_limit', required_plan: requiredPlan } }),
   notFound: (message = 'Not found.') => new ORPCError('NOT_FOUND', { message }),
   conflict: (message: string, reason?: string) => new ORPCError('CONFLICT', { message, data: { reason } }),
   bad: (message: string) => new ORPCError('BAD_REQUEST', { message }),
@@ -89,7 +91,7 @@ export function assertRole(ctx: AuthedContext, ...roles: Role[]) {
 export function assertFeature(ctx: AuthedContext, f: Feature) {
   if (!hasFeature(ctx.plan, f)) {
     const need = FEATURE_PLAN[f];
-    throw fail.forbidden(`Available on ${need[0].toUpperCase()}${need.slice(1)} — upgrade to unlock.`, 'plan_required', { plan: need });
+    throw fail.planLimit(`Available on ${need[0].toUpperCase()}${need.slice(1)} — upgrade to unlock.`, need);
   }
 }
 

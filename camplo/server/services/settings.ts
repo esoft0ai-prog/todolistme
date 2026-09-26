@@ -65,7 +65,7 @@ export async function connectIntegration(ctx: AuthedContext, provider: Provider,
       const [{ n }] = await ctx.db.select({ n: sql<number>`count(*)` }).from(integrations)
         .where(and(eq(integrations.tenantId, ctx.tenantId), eq(integrations.status, 'connected'), sql`${integrations.provider} in ('twenty_crm','gohighlevel','hubspot','salesforce','activecampaign','mailchimp','brevo','notifuse','meta_ads','google_ads','slack','umami')`));
       if (Number(n) >= PLAN_LIMITS[ctx.plan].connectedTools) {
-        throw fail.forbidden(ctx.plan === 'starter' ? 'Connected tools are available on Growth.' : 'Growth includes one connected tool. Upgrade to Watchtower for unlimited tools.', 'plan_required', { plan: ctx.plan === 'starter' ? 'growth' : 'watchtower' });
+        throw fail.planLimit(ctx.plan === 'starter' ? 'Connected tools are available on Growth.' : 'Growth includes one connected tool. Upgrade to Watchtower for unlimited tools.', ctx.plan === 'starter' ? 'growth' : 'watchtower');
       }
     }
   }
@@ -75,7 +75,7 @@ export async function connectIntegration(ctx: AuthedContext, provider: Provider,
   const activeModes: Mode[] = cat.modes.filter((m) => (m === 'receive' ? cat.methods.includes('webhook') : m === 'query' ? !!input.apiKey || !!existing?.apiKeyEncrypted : true));
   const values = {
     tenantId: ctx.tenantId, provider, connectionMethod: method,
-    apiKeyEncrypted: input.apiKey ? encrypt(input.apiKey.trim()) : existing?.apiKeyEncrypted ?? null,
+    apiKeyEncrypted: input.apiKey ? encrypt(input.apiKey.trim(), 'integration') : existing?.apiKeyEncrypted ?? null,
     status: 'connected' as const, activeModes, lastVerifiedAt: new Date(), updatedAt: new Date(),
   };
   const [row] = existing
@@ -119,7 +119,7 @@ export async function listInbound(ctx: AuthedContext) {
 export async function createInbound(ctx: AuthedContext, sourceLabel: string, campaignId?: string | null) {
   assertRole(ctx, 'owner', 'admin');
   const secret = randomToken(24);
-  const [w] = await ctx.db.insert(inboundWebhooks).values({ tenantId: ctx.tenantId, sourceLabel: sourceLabel.trim(), url: 'pending', secretEncrypted: encrypt(secret), campaignId: campaignId ?? null }).returning();
+  const [w] = await ctx.db.insert(inboundWebhooks).values({ tenantId: ctx.tenantId, sourceLabel: sourceLabel.trim(), url: 'pending', secretEncrypted: encrypt(secret, 'webhook'), campaignId: campaignId ?? null }).returning();
   const url = `${config.appUrl}/api/v1/hooks/${w.id}`;
   await ctx.db.update(inboundWebhooks).set({ url }).where(eq(inboundWebhooks.id, w.id));
   return { id: w.id, sourceLabel: w.sourceLabel, url, secret, status: w.status };
@@ -145,7 +145,7 @@ export async function createOutbound(ctx: AuthedContext, input: { destinationUrl
   if (u.protocol !== 'https:' && config.env === 'production') throw fail.bad('Outbound webhooks must use https.');
   if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.)/.test(u.hostname)) throw fail.bad('Private network destinations are not allowed.');
   const [w] = await ctx.db.insert(outboundWebhooks).values({
-    tenantId: ctx.tenantId, destinationUrl: u.toString(), eventTrigger: input.eventTrigger, secretEncrypted: input.secret ? encrypt(input.secret) : null,
+    tenantId: ctx.tenantId, destinationUrl: u.toString(), eventTrigger: input.eventTrigger, secretEncrypted: input.secret ? encrypt(input.secret, 'webhook') : null,
   }).returning();
   return { id: w.id, destinationUrl: w.destinationUrl, eventTrigger: w.eventTrigger, status: w.status };
 }
@@ -190,13 +190,13 @@ export async function patchAiProvider(ctx: AuthedContext, p: {
   if (p.primary) {
     if (p.primary.provider !== undefined) set.primaryProvider = p.primary.provider;
     if (p.primary.modelName !== undefined) set.primaryModelName = p.primary.modelName?.trim() || null;
-    if (p.primary.apiKey !== undefined) { set.primaryApiKeyEncrypted = p.primary.apiKey ? encrypt(p.primary.apiKey.trim()) : null; set.primaryStatus = 'not_connected'; }
+    if (p.primary.apiKey !== undefined) { set.primaryApiKeyEncrypted = p.primary.apiKey ? encrypt(p.primary.apiKey.trim(), 'ai') : null; set.primaryStatus = 'not_connected'; }
   }
   if (p.fallback) {
     if (p.fallback.enabled !== undefined) set.fallbackEnabled = p.fallback.enabled;
     if (p.fallback.provider !== undefined) set.fallbackProvider = p.fallback.provider;
     if (p.fallback.modelName !== undefined) set.fallbackModelName = p.fallback.modelName?.trim() || null;
-    if (p.fallback.apiKey !== undefined) { set.fallbackApiKeyEncrypted = p.fallback.apiKey ? encrypt(p.fallback.apiKey.trim()) : null; set.fallbackStatus = 'not_connected'; }
+    if (p.fallback.apiKey !== undefined) { set.fallbackApiKeyEncrypted = p.fallback.apiKey ? encrypt(p.fallback.apiKey.trim(), 'ai') : null; set.fallbackStatus = 'not_connected'; }
   }
   if (p.refreshIntervalMinutes !== undefined) set.refreshIntervalMinutes = Math.max(5, Math.round(p.refreshIntervalMinutes));
   if (p.eventTriggers) set.eventTriggers = p.eventTriggers.filter((t) => ['sla_breach', 'webhook_silence', 'lead_batch', 'budget_threshold'].includes(t));
@@ -222,21 +222,22 @@ export async function verifyAi(ctx: AuthedContext, which: 'primary' | 'fallback'
 export async function getTelegram(ctx: AuthedContext) {
   assertRole(ctx, 'owner');
   const [t] = await ctx.db.select().from(telegramConnections).where(eq(telegramConnections.tenantId, ctx.tenantId));
+  const linkCode = ctx.user.id.replace(/-/g, '');
   return t
-    ? { connected: t.verified, botUsername: t.botUsername, tokenMasked: mask(decrypt(t.botTokenEncrypted)), criticalAlertsEnabled: t.criticalAlertsEnabled, dailyDigestEnabled: t.dailyDigestEnabled }
-    : { connected: false, botUsername: null, tokenMasked: null, criticalAlertsEnabled: true, dailyDigestEnabled: false };
+    ? { connected: t.verified, botUsername: t.botUsername, tokenMasked: mask(decrypt(t.botTokenEncrypted)), criticalAlertsEnabled: t.criticalAlertsEnabled, dailyDigestEnabled: t.dailyDigestEnabled, camploBot: false, linkCode }
+    : { connected: !!config.telegramBotToken, botUsername: null, tokenMasked: null, criticalAlertsEnabled: true, dailyDigestEnabled: false, camploBot: !!config.telegramBotToken, linkCode };
 }
 
 export async function verifyTelegram(ctx: AuthedContext, botToken: string) {
   assertRole(ctx, 'owner');
   const res = await verifyBot(botToken.trim());
-  const values = { botTokenEncrypted: encrypt(botToken.trim()), botUsername: res.username ?? null, verified: res.ok };
+  const values = { botTokenEncrypted: encrypt(botToken.trim(), 'telegram'), botUsername: res.username ?? null, verified: res.ok };
   await ctx.db.insert(telegramConnections).values({ tenantId: ctx.tenantId, ...values })
     .onConflictDoUpdate({ target: telegramConnections.tenantId, set: values });
   if (res.ok) {
-    // Register the webhook so inline "Acknowledge" buttons reach Camplo.
-    const { telegramCall } = await import('../lib/telegram.js');
-    await telegramCall(botToken.trim(), 'setWebhook', { url: `${config.appUrl}/api/telegram/${ctx.tenantId}` });
+    // Register the webhook (with its secret_token) so /start linking and Acknowledge buttons reach Camplo.
+    const { registerWebhook } = await import('./telegram.js');
+    await registerWebhook(botToken.trim(), ctx.tenantId);
   }
   return { ok: res.ok, botUsername: res.username ?? null };
 }
@@ -286,6 +287,7 @@ export async function patchNotificationSettings(ctx: AuthedContext, p: {
 
 /** Link the caller's Telegram chat (they send /start <code> to the bot). */
 export async function telegramLinkCode(ctx: AuthedContext) {
-  return { code: `${ctx.user.id.slice(0, 8)}` };
+  const { linkCodeFor } = await import('./telegram.js');
+  return { code: linkCodeFor(ctx.user.id) };
 }
 

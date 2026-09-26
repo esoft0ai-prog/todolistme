@@ -1,4 +1,5 @@
 /** Workspace, team management (TM1–TM4), notifications, workspace log and global search. */
+import { createCheckout } from '../lib/polar.js';
 import { and, desc, eq, gte, ilike, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { campaignMembers, campaigns, deployments, leads, notifications, tenants, users, workspaceLogs } from '../db/schema.js';
 import { fail, assertRole, type AuthedContext } from '../lib/orpc.js';
@@ -9,6 +10,7 @@ import { DAY, PLAN_LIMITS, PLAN_PRICE, type Plan } from '../domain/rules.js';
 import { initials, publicTenant, publicUser } from './auth.js';
 import { avgResponseMs, workspaceConversion } from './metrics.js';
 import { logWorkspace } from './effects.js';
+import { advancedUsage } from '../ai/router.js';
 import { storageFor } from '../lib/storage.js';
 import { displayId } from './leads.js';
 
@@ -40,15 +42,57 @@ export async function patchWorkspace(ctx: AuthedContext, patch: {
   return publicTenant(t);
 }
 
-export function planInfo(ctx: AuthedContext) {
-  return { plan: ctx.plan, price: PLAN_PRICE[ctx.plan], limits: limitsFor(ctx.plan) };
+/** D-NEW-25: `aiUsage.deepPercent` = share of the plan's Deep/Strategic budget used this month (non-BYOK). */
+export async function planInfo(ctx: AuthedContext) {
+  const usage = await advancedUsage(ctx.db, ctx.tenantId, ctx.plan);
+  return {
+    plan: ctx.plan, price: PLAN_PRICE[ctx.plan], limits: limitsFor(ctx.plan),
+    aiUsage: { deepPercent: Math.round(Math.min(1, usage) * 100), warning: usage >= 0.8 && usage < 1, limitReached: usage >= 1 },
+  };
+}
+
+// ------------------------------------------------------------------ /settings (workspace-wide alert + SLA settings)
+
+export async function getSettings(ctx: AuthedContext) {
+  assertRole(ctx, 'owner', 'admin');
+  const t = ctx.tenant;
+  return {
+    workspace: { name: t.businessName, logoUrl: t.logoUrl, plan: t.plan, storageUsedBytes: t.storageUsedBytes, storageQuotaBytes: t.storageQuotaBytes },
+    alerts: {
+      notification_email: t.notificationEmail, urgent_alerts_enabled: t.urgentAlertsEnabled,
+      daily_summary_enabled: t.dailySummaryEnabled, daily_summary_time: t.dailySummaryTime.slice(0, 5),
+    },
+    sla: { sla_threshold_minutes: t.slaThresholdMinutes, vip_lead_enabled: t.vipLeadEnabled, vip_sla_threshold_minutes: t.vipSlaThresholdMinutes },
+  };
+}
+
+export async function patchSettings(ctx: AuthedContext, p: {
+  name?: string; notification_email?: string; urgent_alerts_enabled?: boolean; daily_summary_enabled?: boolean; daily_summary_time?: string;
+  sla_threshold_minutes?: number; vip_lead_enabled?: boolean; vip_sla_threshold_minutes?: number;
+}) {
+  assertRole(ctx, 'owner');
+  const set: Partial<typeof tenants.$inferInsert> = {};
+  if (p.name !== undefined) set.businessName = p.name.trim();
+  if (p.notification_email !== undefined) set.notificationEmail = p.notification_email;
+  if (p.urgent_alerts_enabled !== undefined) set.urgentAlertsEnabled = p.urgent_alerts_enabled;
+  if (p.daily_summary_enabled !== undefined) set.dailySummaryEnabled = p.daily_summary_enabled;
+  if (p.daily_summary_time !== undefined) set.dailySummaryTime = `${p.daily_summary_time}:00`.slice(0, 8);
+  if (p.sla_threshold_minutes !== undefined) set.slaThresholdMinutes = p.sla_threshold_minutes;
+  if (p.vip_lead_enabled !== undefined) set.vipLeadEnabled = p.vip_lead_enabled;
+  if (p.vip_sla_threshold_minutes !== undefined) set.vipSlaThresholdMinutes = p.vip_sla_threshold_minutes;
+  if (Object.keys(set).length) {
+    const [t] = await ctx.db.update(tenants).set(set).where(eq(tenants.id, ctx.tenantId)).returning();
+    ctx.tenant = t;
+    await logWorkspace(ctx.db, ctx.tenantId, ctx.user.id, `Workspace settings updated (${Object.keys(p).join(', ')})`);
+  }
+  return getSettings(ctx);
 }
 
 /** O6 upgrade. With Polar configured this returns a checkout URL; the webhook applies the new plan. */
 export async function upgrade(ctx: AuthedContext, targetPlan: Plan) {
   assertRole(ctx, 'owner');
-  const url = process.env[`POLAR_CHECKOUT_URL_${targetPlan.toUpperCase()}`];
-  if (url) return { checkoutUrl: `${url}?customer_email=${encodeURIComponent(ctx.tenant.ownerEmail)}&metadata[tenant_id]=${ctx.tenantId}`, applied: false };
+  const checkoutUrl = await createCheckout({ plan: targetPlan, email: ctx.tenant.ownerEmail, tenantId: ctx.tenantId });
+  if (checkoutUrl) return { checkoutUrl, applied: false };
   if (process.env.ALLOW_DIRECT_PLAN_CHANGE === 'true') {
     await ctx.db.update(tenants).set({ plan: targetPlan }).where(eq(tenants.id, ctx.tenantId));
     await logWorkspace(ctx.db, ctx.tenantId, ctx.user.id, `Plan changed to ${targetPlan}`);
@@ -164,7 +208,7 @@ export async function invite(ctx: AuthedContext, email: string, role: 'admin' | 
     throw fail.conflict(existing.joinedAt ? 'This person is already a member.' : 'An invitation has already been sent to this address.', existing.joinedAt ? 'already_member' : 'pending_invite');
   }
   const [{ n }] = await ctx.db.select({ n: sql<number>`count(*)` }).from(users).where(and(eq(users.tenantId, ctx.tenantId), isNull(users.removedAt)));
-  if (Number(n) >= PLAN_LIMITS[ctx.plan].members) throw fail.forbidden(`Your plan includes ${PLAN_LIMITS[ctx.plan].members} team members. Upgrade to invite more.`, 'plan_limit', { plan: 'growth' });
+  if (Number(n) >= PLAN_LIMITS[ctx.plan].members) throw fail.planLimit(`Your plan includes ${PLAN_LIMITS[ctx.plan].members} team members. Upgrade to invite more.`, 'growth');
   let u: typeof users.$inferSelect;
   if (existing) {
     [u] = await ctx.db.update(users).set({ removedAt: null, joinedAt: null, role, invitedBy: ctx.user.id, createdAt: new Date() }).where(eq(users.id, existing.id)).returning();

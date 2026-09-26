@@ -100,7 +100,7 @@ export async function seedDemo(db: DB) {
   for (const [name, c, deployedDays, lastMin, visits, vip] of pageDefs) {
     const [d] = await db.insert(s.deployments).values({
       tenantId: T, campaignId: c.id, name, subdomain: `${name}-${tok(3).toLowerCase().replace(/[^a-z0-9]/g, 'x').slice(0, 4)}`, storagePath: 'pending',
-      status: 'ready', storageSizeBytes: 1400, webhookSecretEncrypted: encrypt(tok(24)), deployedAt: ago(deployedDays * DAY), vip,
+      status: 'ready', storageSizeBytes: 1400, webhookSecretEncrypted: encrypt(tok(24), 'webhook'), deployedAt: ago(deployedDays * DAY), vip,
       servingState: name === 'summer-main' ? 'archived' : name === 'lekki-brochure' ? 'paused' : 'active',
       earlyWarningActive: deployedDays < 3, previousStoragePath: name === 'bf-bundle-b' ? `sites/${T}/prev/` : null, previousDeployedAt: name === 'bf-bundle-b' ? ago(3 * DAY) : null,
     }).returning();
@@ -213,12 +213,12 @@ export async function seedDemo(db: DB) {
   }
 
   // Integrations (Watchtower: several connected) + cross-tool rules/breaches.
-  const [twenty] = await db.insert(s.integrations).values({ tenantId: T, provider: 'twenty_crm', connectionMethod: 'api_key', apiKeyEncrypted: encrypt('twenty_demo_key_7f3a'), activeModes: ['receive', 'send', 'query'], status: 'connected', lastVerifiedAt: ago(DAY) }).returning();
+  const [twenty] = await db.insert(s.integrations).values({ tenantId: T, provider: 'twenty_crm', connectionMethod: 'api_key', apiKeyEncrypted: encrypt('twenty_demo_key_7f3a', 'integration'), activeModes: ['receive', 'send', 'query'], status: 'connected', lastVerifiedAt: ago(DAY) }).returning();
   await db.update(s.integrations).set({ webhookUrl: `${config.appUrl}/api/v1/lifecycle/${twenty.id}/${tok(18)}` }).where(sql`${s.integrations.id} = ${twenty.id}`);
   await db.insert(s.integrations).values([
     { tenantId: T, provider: 'tally', connectionMethod: 'webhook', activeModes: ['receive'], status: 'connected', lastVerifiedAt: ago(DAY) },
-    { tenantId: T, provider: 'umami', connectionMethod: 'api_key', apiKeyEncrypted: encrypt('umami_demo_key_91c2'), activeModes: ['query'], status: 'connected', lastVerifiedAt: ago(DAY) },
-    { tenantId: T, provider: 'gohighlevel', connectionMethod: 'api_key', apiKeyEncrypted: encrypt('ghl_demo_key_0b77'), activeModes: ['receive', 'send', 'query'], status: 'failed', lastVerifiedAt: ago(2 * DAY) },
+    { tenantId: T, provider: 'umami', connectionMethod: 'api_key', apiKeyEncrypted: encrypt('umami_demo_key_91c2', 'integration'), activeModes: ['query'], status: 'connected', lastVerifiedAt: ago(DAY) },
+    { tenantId: T, provider: 'gohighlevel', connectionMethod: 'api_key', apiKeyEncrypted: encrypt('ghl_demo_key_0b77', 'integration'), activeModes: ['receive', 'send', 'query'], status: 'failed', lastVerifiedAt: ago(2 * DAY) },
   ]);
   const [rule] = await db.insert(s.crossToolSlaRules).values([
     { tenantId: T, integrationId: twenty.id, ruleType: 'not_contacted', thresholdValue: 24, thresholdUnit: 'hours', enabled: true, notificationChannels: ['ai_panel', 'email'] },
@@ -229,7 +229,7 @@ export async function seedDemo(db: DB) {
     { tenantId: T, leadId: byName('Grace Lawal').id, integrationId: twenty.id, ruleId: rule.id, breachType: 'not_contacted', hoursExceeded: 3, detectedAt: ago(2 * HOUR) },
     { tenantId: T, leadId: byName('Joy Ekpo').id, integrationId: twenty.id, ruleId: rule.id, breachType: 'not_contacted', hoursExceeded: 11, detectedAt: ago(5 * HOUR) },
   ]);
-  const [ib] = await db.insert(s.inboundWebhooks).values({ tenantId: T, sourceLabel: 'Instantly — warm replies', url: 'pending', secretEncrypted: encrypt(tok(24)), campaignId: bf.id, lastReceivedAt: ago(5 * HOUR) }).returning();
+  const [ib] = await db.insert(s.inboundWebhooks).values({ tenantId: T, sourceLabel: 'Instantly — warm replies', url: 'pending', secretEncrypted: encrypt(tok(24), 'webhook'), campaignId: bf.id, lastReceivedAt: ago(5 * HOUR) }).returning();
   await db.update(s.inboundWebhooks).set({ url: `${config.appUrl}/api/v1/hooks/${ib.id}` }).where(sql`${s.inboundWebhooks.id} = ${ib.id}`);
 
   // Campaign memory: operator changes with measured outcomes.

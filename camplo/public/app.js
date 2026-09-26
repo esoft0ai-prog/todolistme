@@ -41,6 +41,8 @@
         if (!res.ok) {
           var err = new Error((j && j.message) || ({ 413: 'Storage quota exceeded. Delete unused deployments to free space.', 500: 'Something went wrong on our end. Try again in a moment.' }[res.status]) || 'Connection issue. Check your network and try again.');
           err.status = res.status; err.data = j && j.data;
+          // ADL D-NEW-9: any plan-gated call answers 403 { reason: 'plan_limit', required_plan } → show the upgrade modal.
+          if (res.status === 403 && j && j.reason === 'plan_limit' && D && init.method !== 'GET') { err.handled = true; setTimeout(function () { openOverlay(upgradeModal(j.required_plan || 'growth')); }, 0); }
           if (res.status === 403 && j && j.data && j.data.reason === 'account_suspended') { D = null; S.flash = j.message; go('login'); }
           throw err;
         }
@@ -58,6 +60,8 @@
     }
     return undefined;
   }
+  /** P-4 list envelope → its rows. */
+  function list(r) { return r && Array.isArray(r.data) ? r.data : []; }
   function inval(prefix) { Object.keys(C).forEach(function (k) { if (k.indexOf(prefix) === 0) delete C[k]; }); }
 
   // ================================================================ data mapping (API → view model)
@@ -105,14 +109,14 @@
   /** Load the workspace-wide data every screen relies on. */
   function loadCore() {
     return Promise.all([
-      api('/auth/me'), api('/workspace'), api('/campaigns'), api('/leads?limit=200'), api('/insights'), api('/recommendations'),
-      api('/pages'), api('/team/members'), api('/sla/live'), api('/notifications'),
-      api('/team-notes').catch(function () { return []; }),
+      api('/auth/me'), api('/workspace'), api('/campaigns?limit=100'), api('/leads?limit=100'), api('/insights?limit=100'), api('/recommendations?limit=100'),
+      api('/pages?limit=100'), api('/team/members?limit=100'), api('/sla/live'), api('/notifications'),
+      api('/team-notes?limit=100').catch(function () { return { data: [] }; }),
     ]).then(function (r) {
       D = {
-        me: r[0].user, ws: r[1], plan: r[1].plan, campaigns: r[2].map(mapCampaign), leadsEnv: r[3], leads: r[3].leads.map(mapLead),
-        insights: r[4].map(mapInsight), recs: r[5], pages: r[6].pages.map(mapPage), accAvg: r[6].avgConversionRate, team: r[7].map(mapMember),
-        live: r[8], notifs: r[9], teamNotes: r[10], slaMinutes: r[1].slaThresholdMinutes,
+        me: r[0].user, ws: r[1], plan: r[1].plan, campaigns: list(r[2]).map(mapCampaign), leadsEnv: r[3], leads: list(r[3]).map(mapLead),
+        insights: list(r[4]).map(mapInsight), recs: list(r[5]), pages: list(r[6]).map(mapPage), accAvg: r[6].workspace_avg_conversion_rate, team: list(r[7]).map(mapMember),
+        live: r[8], notifs: { notifications: list(r[9]), unreadCount: r[9].unreadCount }, teamNotes: list(r[10]), slaMinutes: r[1].slaThresholdMinutes,
       };
       return D;
     });
@@ -171,6 +175,8 @@
   function fmtDate(ts) { return ts ? new Date(ts).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'; }
   function speedClass(sec) { return sec == null ? 'muted' : sec < 300 ? 'green' : sec < 1800 ? 'amber' : 'red'; }
   function healthBadge(h) { return h ? '<span class="badge ' + ({ HEALTHY: 'b-green', WATCH: 'b-amber', CRITICAL: 'b-red' }[h]) + '">' + h + '</span>' : planChip('growth'); }
+  /** Campaign status chip: Complete / Paused, else the live Health Pulse. */
+  function statusBadge2(c) { return c.status === 'COMPLETE' ? '<span class="badge b-blue">Complete</span>' : c.status === 'PAUSED' ? '<span class="badge b-grey">Paused</span>' : healthBadge(c.health); }
   function av(id, size) { var u = user(id); return '<span class="avatar ' + (size ? 's' + size : '') + '" title="' + esc(u.name) + '">' + esc(u.initials) + '</span>'; }
   function first(id) { return user(id).name.split(' ')[0]; }
   function isOwner() { return D && D.me.role === 'owner'; }
@@ -213,13 +219,15 @@
   }
   function go(path) { if (location.hash === '#/' + path) render(); else location.hash = '#/' + path; }
 
-  var PUBLIC = { login: 1, signup: 1, forgot: 1, 'forgot-password': 1, 'reset-password': 1, pending: 1, share: 1, acknowledge: 1, 'accept-invite': 1 };
+  var PUBLIC = { verify: 1, 'magic-link': 1, login: 1, signup: 1, forgot: 1, 'forgot-password': 1, 'reset-password': 1, pending: 1, share: 1, acknowledge: 1, 'accept-invite': 1 };
 
   function render(soft) {
     var r = route(), top = r.parts[0];
     if (!soft) closeOverlay();
     document.body.classList.toggle('has-mnav', !PUBLIC[top]);
     var html;
+    // D-NEW-17: phones get the AI feed, AI chat and magic-link acknowledgment only; everything else is desktop/tablet.
+    if (!PUBLIC[top] && top !== 'feed' && top !== 'onboarding' && isPhone()) { location.replace('#/feed'); return; }
     if (PUBLIC[top]) html = publicScreen(top, r);
     else if (!D) { html = bootScreen(); boot(); }
     else html = shell(r.parts, r.query);
@@ -230,6 +238,9 @@
     tick(); tickSlow();
   }
   window.addEventListener('hashchange', function () { render(); });
+  function isPhone() { return window.matchMedia('(max-width: 767px)').matches; }
+  var wasPhone = isPhone();
+  window.addEventListener('resize', function () { var p = isPhone(); if (p !== wasPhone) { wasPhone = p; if (!p && route().parts[0] === 'feed') go('dashboard'); else render(true); } });
 
   var booting = false;
   function boot() {
@@ -403,20 +414,20 @@
 
     var pinned = D.campaigns.filter(function (c) { return c.pinned; });
     var recent = D.campaigns.filter(function (c) { return !c.pinned; });
-    var list = '<section>' +
+    var items_ = '<section>' +
       '<div class="spread" style="margin-bottom:12px"><div class="h2">Campaigns</div><div class="row"><span class="ts">Pinned | ' + pinned.length + ' of 3</span>' + (canManage() ? '<button class="btn btn-ghost btn-sm" data-act="newCampaign">' + ic('plus', 14) + ' New Campaign</button>' : '') + '</div></div>' +
       (D.campaigns.length ? '' : empty('target', 'No campaigns yet.', 'Create your first campaign to start monitoring.', canManage() ? '<button class="btn btn-primary" data-act="newCampaign">Create Campaign</button>' : '')) +
       '<div class="col gap12">' + pinned.map(campaignCard).join('') + '</div>' +
       (recent.length ? '<div class="section-label"><span class="label">Recent campaigns</span></div><div class="col gap12">' + recent.map(campaignCard).join('') + '</div>' : '') +
       '<div class="card" style="margin-top:16px;padding:16px"><div class="spread"><div class="row"><div class="stack">' + D.team.slice(0, 6).map(function (u) { return av(u.id, 28); }).join('') + '</div><span class="small">' + D.team.length + ' on the team</span></div>' + (canManage() ? '<button class="btn btn-ghost btn-sm" data-act="invite">+ Invite</button>' : '') + '</div></div>' +
       '</section>';
-    return '<div class="page">' + brief + '<div class="cc">' + intel + list + '</div></div>';
+    return '<div class="page">' + brief + '<div class="cc">' + intel + items_ + '</div></div>';
   }
 
   function campaignCard(c) {
     var cls = c.status === 'COMPLETE' ? 'done' : c.health === 'CRITICAL' ? 'crit' : '';
     return '<article class="ccard ' + cls + '" data-go="campaigns/' + c.id + '/overview">' +
-      '<div class="spread"><div class="h3">' + esc(c.name) + '</div><div class="row">' + (c.status === 'COMPLETE' ? '<span class="badge b-blue">Complete</span>' : healthBadge(c.health)) +
+      '<div class="spread"><div class="h3">' + esc(c.name) + '</div><div class="row">' + statusBadge2(c) +
       (canManage() && c.status !== 'COMPLETE' ? '<button class="close tip" data-tip="' + (c.pinned ? 'Unpin' : 'Pin') + '" data-act="pin" data-id="' + c.id + '" data-v="' + (c.pinned ? '0' : '1') + '" style="color:' + (c.pinned ? 'var(--accent-orange)' : 'var(--text-muted)') + '">' + ic('flag', 13) + '</button>' : '') + '</div></div>' +
       (c.desc ? '<div class="desc">' + esc(c.desc) + '</div>' : '') +
       '<div class="row wrap gap12"><span class="small">Avg response: <b class="' + speedClass(c.avgResp) + '">' + secs(c.avgResp) + '</b></span>' + (c.cpl != null ? '<span class="ts">CPL: ' + money(c.cpl, c.currency) + '</span>' : '') + '<span class="ts">' + c.leads + ' leads</span></div>' +
@@ -503,8 +514,8 @@
       '<div class="crumb"><a href="#/dashboard">' + ic('back', 13) + ' Campaign</a> / ' + esc(user(c.owner).name) + ' <span class="mono" style="color:var(--text-muted);margin-left:8px">camp_' + c.id.slice(0, 8) + '</span></div>' +
       '<div class="spread wrap" style="margin-top:14px"><div class="row gap12 editable"><h1 class="h1" id="campName">' + esc(c.name) + '</h1>' + (canManage() ? '<button class="close pen" data-act="renameCampaign" data-id="' + c.id + '" aria-label="Edit name">' + ic('pen', 14) + '</button>' : '') + '</div>' +
       '<div class="row">' + (planOk('growth') ? (canManage() ? '<button class="btn btn-ghost" data-act="share" data-id="' + c.id + '">' + ic('share', 14) + ' Share with client</button>' : '') : planChip('growth')) +
-      (c.status !== 'COMPLETE' && canManage() ? '<button class="btn btn-ghost" data-act="markComplete" data-id="' + c.id + '">Mark Campaign Complete</button>' : '') + '</div></div>' +
-      '<div class="camp-meta">' + (c.status === 'COMPLETE' ? '<span class="badge b-blue">Complete</span>' : healthBadge(c.health)) + '<span class="sep"></span>' +
+      (c.status !== 'COMPLETE' && canManage() ? '<button class="btn btn-ghost" data-act="pauseCampaign" data-id="' + c.id + '" data-v="' + (c.status === 'PAUSED' ? 'active' : 'paused') + '">' + (c.status === 'PAUSED' ? 'Resume' : 'Pause') + '</button><button class="btn btn-ghost" data-act="markComplete" data-id="' + c.id + '">Mark Campaign Complete</button>' : '') + '</div></div>' +
+      '<div class="camp-meta">' + statusBadge2(c) + '<span class="sep"></span>' +
       '<span>Speed-to-lead <b class="' + speedClass(c.avgResp) + '">' + secs(c.avgResp) + '</b></span>' + (c.cpl != null ? '<span class="sep"></span><span>CPL <b class="' + (c.cplThreshold != null && c.cpl > c.cplThreshold ? 'amber' : '') + '">' + money(c.cpl, c.currency) + '</b></span>' : '') +
       '<span class="sep"></span><span>Started ' + fmtDate(c.start) + '</span><span class="sep"></span><span class="row">' + av(c.owner, 20) + esc(user(c.owner).name) + '</span><span class="sep"></span><span>' + (c.end ? 'Completed ' + fmtDate(c.end) : 'Day ' + c.days) + '</span></div>' +
       '<nav class="subtabs">' + tabs.map(function (t) {
@@ -524,7 +535,7 @@
   }
 
   function campaignLeads(c) {
-    var v = lazy('camp:leads:' + c.id, '/campaigns/' + c.id + '/leads?limit=200', function (r) { return { list: r.leads.map(mapLead), more: r.has_more }; });
+    var v = lazy('camp:leads:' + c.id, '/campaigns/' + c.id + '/leads?limit=100', function (r) { return { list: list(r).map(mapLead), more: r.has_more, cursor: r.next_cursor }; });
     if (!v) return skel(5);
     if (v.__error) return errBox(v);
     return leadFilters(false) + '<div id="leadTable" data-camp="' + c.id + '">' + leadTable(filteredLeads(c.id, v.list), true, v.more) + '</div>';
@@ -584,14 +595,14 @@
       return '<div style="max-width:760px"><div class="h2">Insights</div><div class="card" style="margin-top:16px"><div class="spread"><div class="small">Campaign intelligence feeds are available on Growth.</div>' + planChip('growth') + '</div></div></div>';
     }
     var cats = ['All', 'SLA', 'Spend', 'Performance', 'Engagement'];
-    var recsV = lazy('camp:recs:' + c.id, '/campaigns/' + c.id + '/recommendations');
-    var list = D.insights.filter(function (i) { return i.camp === c.id && (S.insightFilter === 'All' || i.cat === S.insightFilter); });
+    var recsV = lazy('camp:recs:' + c.id, '/campaigns/' + c.id + '/recommendations', list);
+    var items_ = D.insights.filter(function (i) { return i.camp === c.id && (S.insightFilter === 'All' || i.cat === S.insightFilter); });
     var recs = recsV && !recsV.__error ? recsV : [];
     var head = '<div class="spread wrap"><div><div class="h2">Insights</div><div class="italic small" style="color:var(--text-muted)">Powered by Camplo Intelligence</div></div><button class="btn btn-ghost btn-sm" data-act="refreshInsights">' + ic('refresh', 14) + ' Refresh</button></div>';
-    if (!list.length && !recs.length && S.insightFilter === 'All') return '<div style="max-width:760px">' + head + (recsV ? empty('brain', 'No insights yet.', 'Camplo will surface intelligence as your campaign generates activity.') : skel(3)) + '</div>';
-    var pri = list.filter(function (i) { return i.priority; });
-    var mon = list.filter(function (i) { return i.kind === 'insufficient_evidence'; });
-    var rest = list.filter(function (i) { return !i.priority && i.kind !== 'insufficient_evidence'; });
+    if (!items_.length && !recs.length && S.insightFilter === 'All') return '<div style="max-width:760px">' + head + (recsV ? empty('brain', 'No insights yet.', 'Camplo will surface intelligence as your campaign generates activity.') : skel(3)) + '</div>';
+    var pri = items_.filter(function (i) { return i.priority; });
+    var mon = items_.filter(function (i) { return i.kind === 'insufficient_evidence'; });
+    var rest = items_.filter(function (i) { return !i.priority && i.kind !== 'insufficient_evidence'; });
     var groups = {}, order = [];
     sortInsights(rest).forEach(function (i) { var k = dayLabel(i.t); if (!groups[k]) { groups[k] = []; order.push(k); } groups[k].push(i); });
     return '<div style="max-width:760px">' + head +
@@ -603,14 +614,14 @@
   }
 
   function notesBlock(key, path, type, entityId, teamPath) {
-    var v = lazy(key, path);
-    var tn = teamPath && planOk('growth') ? lazy(key + ':team', teamPath) : [];
+    var v = lazy(key, path + '?limit=100', list);
+    var tn = teamPath && planOk('growth') ? lazy(key + ':team', teamPath + '?limit=100', list) : [];
     if (!v) return skel(2);
     if (v.__error) return errBox(v);
-    var list = v.map(function (n) { return Object.assign({ kind: 'note' }, n); });
-    (tn && !tn.__error ? tn : []).forEach(function (t) { list.push({ kind: 'team', id: t.id, authorId: t.authorId, authorName: t.authorName, content: t.content, createdAt: t.createdAt, editedAt: t.editedAt, recipients: t.recipients }); });
-    list.sort(function (a, b) { return ms(b.createdAt) - ms(a.createdAt); });
-    var items = list.length ? list.map(noteItem).join('') : empty('note', 'No notes yet. Be the first to add one.', '');
+    var rows = v.map(function (n) { return Object.assign({ kind: 'note' }, n); });
+    (tn && !tn.__error ? tn : []).forEach(function (t) { rows.push({ kind: 'team', id: t.id, authorId: t.authorId, authorName: t.authorName, content: t.content, createdAt: t.createdAt, editedAt: t.editedAt, recipients: t.recipients }); });
+    rows.sort(function (a, b) { return ms(b.createdAt) - ms(a.createdAt); });
+    var items = rows.length ? rows.map(noteItem).join('') : empty('note', 'No notes yet. Be the first to add one.', '');
     return '<div style="margin-top:12px">' + items + '</div>' +
       '<div class="note-compose"><textarea class="input" rows="2" id="noteInput" placeholder="Add a note... Notes cannot be deleted once posted."></textarea>' +
       '<div class="spread"><span class="ts">⌘/Ctrl + Enter to post</span><button class="btn btn-primary" id="postNote" data-act="postNote" data-type="' + type + '" data-entity="' + entityId + '" data-key="' + key + '" disabled>Post Note</button></div></div>';
@@ -632,7 +643,7 @@
   }
 
   function meetingTab(c) {
-    var v = lazy('camp:meeting:' + c.id, '/campaigns/' + c.id + '/meeting-notes');
+    var v = lazy('camp:meeting:' + c.id, '/campaigns/' + c.id + '/meeting-notes?limit=100', list);
     if (!v) return skel(2);
     if (v.__error) return errBox(v);
     return '<div style="max-width:760px"><div class="spread"><div><div class="h2">Meeting Notes</div><div class="small italic" style="color:var(--text-muted)">Meeting notes will appear here automatically when you connect a meeting tool (coming soon). Add them manually for now.</div></div></div>' +
@@ -645,13 +656,13 @@
     if (!planOk('growth')) return '<div class="card"><div class="spread"><div class="small">Campaign activity logs are available on Growth.</div>' + planChip('growth') + '</div></div>';
     var range = S.logRange || {};
     var key = 'camp:logs:' + c.id + ':' + (range.from || '') + ':' + (range.to || '');
-    var v = lazy(key, '/campaigns/' + c.id + '/logs' + (range.from ? '?from=' + range.from + (range.to ? '&to=' + range.to : '') : ''));
+    var v = lazy(key, '/campaigns/' + c.id + '/logs' + (range.from ? '?from=' + range.from + (range.to ? '&to=' + range.to : '') + '&limit=100' : '?limit=100'));
     var head = '<div class="spread wrap"><div class="h2">Activity Log</div><div class="row"><input class="input" type="date" id="logFrom" value="' + (range.from || '') + '" style="width:160px"><span class="ts">to</span><input class="input" type="date" id="logTo" value="' + (range.to || '') + '" style="width:160px"><button class="btn btn-ghost btn-sm" data-act="logRange" data-id="' + c.id + '">Apply</button>' + (range.from ? '<button class="linkbtn" data-act="logClear">Clear</button>' : '') + '</div></div>';
     if (!v) return head + skel(4);
     if (v.__error) return head + errBox(v);
-    if (!v.logs.length) return head + empty('clock', range.from ? 'No activity in this period.' : 'No activity recorded yet.', range.from ? '' : 'Events will appear as your team works.');
+    if (!v.data.length) return head + empty('clock', range.from ? 'No activity in this period.' : 'No activity recorded yet.', range.from ? '' : 'Events will appear as your team works.');
     var groups = {}, order = [];
-    v.logs.forEach(function (e) { var k = dayLabel(ms(e.createdAt)); if (!groups[k]) { groups[k] = []; order.push(k); } groups[k].push(e); });
+    v.data.forEach(function (e) { var k = dayLabel(ms(e.createdAt)); if (!groups[k]) { groups[k] = []; order.push(k); } groups[k].push(e); });
     return '<div style="max-width:860px">' + head + order.map(function (k) {
       return '<div class="section-label"><span class="label">' + k + '</span></div>' + groups[k].map(function (e) {
         return '<div class="log"><span class="mono">' + clock(ms(e.createdAt)) + '</span>' + (e.actorId ? av(e.actorId, 24) : '<span class="avatar s24" style="color:var(--accent-blue)">' + ic('brain', 12) + '</span>') + '<span>' + esc(e.description) + '</span></div>';
@@ -689,13 +700,13 @@
     var s = lazy('camp:sla:' + c.id, '/campaigns/' + c.id + '/sla');
     var od = lazy('camp:od:' + c.id, '/sla/overdue?campaignId=' + c.id);
     var tr = lazy('camp:trend:' + c.id, '/campaigns/' + c.id + '/sla/trend');
-    var tm = lazy('camp:team:' + c.id, '/campaigns/' + c.id + '/sla/team');
+    var tm = lazy('camp:team:' + c.id, '/campaigns/' + c.id + '/sla/team', list);
     if (!s || !od || !tr || !tm) return skel(4);
     if (s.__error) return errBox(s);
     var sec = s.avgResponseMs == null ? null : Math.round(s.avgResponseMs / 1000);
     return '<div class="sla-grid"><div class="card"><div class="label">Campaign SLA summary</div><div class="display ' + speedClass(sec) + '" style="margin-top:8px">' + secs(sec) + '</div><div class="small" style="margin-top:8px">Threshold ' + s.thresholdMinutes + 'm · ' + s.respondedCount + ' of ' + s.leadCount + ' responded</div>' +
       '<div class="label" style="margin-top:20px">7-day trend</div>' + trendBars(tr.days, null) + '</div>' +
-      '<div class="col gap24"><div class="card"><div class="spread"><div class="label">Overdue now</div><span class="badge b-red">' + od.count + '</span></div>' + (od.count ? od.leads.map(overdueRow).join('') : okEmpty()) + '</div>' +
+      '<div class="col gap24"><div class="card"><div class="spread"><div class="label">Overdue now</div><span class="badge b-red">' + od.count + '</span></div>' + (od.count ? list(od).map(overdueRow).join('') : okEmpty()) + '</div>' +
       '<div class="card"><div class="label">Team performance</div>' + tm.map(function (m) { return '<div class="list-row">' + av(m.id, 24) + '<span class="grow">' + esc(m.name) + '</span><span style="width:110px">' + secs(m.avgThisWeekMs == null ? null : m.avgThisWeekMs / 1000) + '</span><span style="width:90px" class="' + (m.breachesThisWeek ? 'red' : 'green') + '">' + m.breachesThisWeek + ' breaches</span></div>'; }).join('') + '</div></div></div>' +
       '<div style="margin-top:16px"><a href="#/sla?tab=config">Configure SLA settings →</a></div>';
   }
@@ -735,9 +746,9 @@
 
     var au = lazy('lead:audit:' + l.id, '/leads/' + l.id + '/audit');
     var audit = '<section class="dsec"><div class="h2">Audit Trail <span style="margin-left:auto">' + (l.respondedAt ? '<span class="badge b-green">Responded</span>' : '<span class="badge b-red">Not responded</span>') + '</span></div>' +
-      (!au ? skel(2) : au.__error ? errBox(au) : '<ul class="audit">' + au.events.map(function (e) { return '<li><span class="mono">' + clock(ms(e.at)) + '</span><span class="row">' + (e.actorId ? av(e.actorId, 20) : '') + esc(e.description) + '</span><span class="ts">' + esc(e.actorName) + '</span></li>'; }).join('') + '</ul>') + '</section>';
+      (!au ? skel(2) : au.__error ? errBox(au) : '<ul class="audit">' + list(au).map(function (e) { return '<li><span class="mono">' + clock(ms(e.at)) + '</span><span class="row">' + (e.actorId ? av(e.actorId, 20) : '') + esc(e.description) + '</span><span class="ts">' + esc(e.actorName) + '</span></li>'; }).join('') + '</ul>') + '</section>';
 
-    var lc = lazy('lead:life:' + l.id, '/leads/' + l.id + '/lifecycle');
+    var lc = lazy('lead:life:' + l.id, '/leads/' + l.id + '/lifecycle?limit=100', list);
     var lcHtml = '<section class="dsec"><div class="h2">Lifecycle</div>' + (!lc ? skel(2) : lc.__error ? errBox(lc) : timeline(lc) +
       (lc.some(function (e) { return e.source !== 'camplo'; }) ? '' : '<div class="small" style="margin-top:12px">No external lifecycle events yet. Connect a CRM via webhook to see the full lead journey. <a href="#/settings/integrations">Connect</a></div>')) + '</section>';
 
@@ -747,7 +758,7 @@
       '<div class="glass" style="padding:20px"><div class="row" style="margin-bottom:10px"><div class="brain-ico" style="width:28px;height:28px">' + ic('brain', 14) + '</div><div class="h3">What Camplo sees</div></div>' +
       '<div class="small" style="line-height:1.6">' + (l.respondedAt ? 'Responded in <b>' + dur(l.respondedAt - l.arrived, true) + '</b>' + (l.respondedAt - l.arrived < 5 * MIN ? ' — inside the 5-minute window where contact rates are highest.' : '. Answers inside five minutes are far more likely to reach a conversation.') :
         'Every minute past 5 lowers the chance of contact. ' + (breaching ? '<b class="red">This lead is past your ' + l.thr + '-minute threshold.</b> ' : '') + (l.vip ? 'This is a <b>VIP page</b> lead.' : '')) + '</div></div>' +
-      (c ? '<div class="card"><div class="label">Campaign</div><a class="h3" style="display:block;margin-top:6px;color:var(--text-primary)" href="#/campaigns/' + c.id + '/overview">' + esc(c.name) + '</a><div style="margin-top:8px">' + (c.status === 'COMPLETE' ? '<span class="badge b-blue">Complete</span>' : healthBadge(c.health)) + '</div></div>' : '') +
+      (c ? '<div class="card"><div class="label">Campaign</div><a class="h3" style="display:block;margin-top:6px;color:var(--text-primary)" href="#/campaigns/' + c.id + '/overview">' + esc(c.name) + '</a><div style="margin-top:8px">' + statusBadge2(c) + '</div></div>' : '') +
       (canManage() && !l.respondedAt && (isOwner() || !l.assignee) ? '<div class="card"><div class="label" style="margin-bottom:8px">' + (l.assignee ? 'Reassign (owner)' : 'Assign') + '</div><select class="select" data-act-change="reassign" data-id="' + l.id + '"><option value="">Choose team member…</option>' +
         D.team.filter(function (t) { return t.id !== l.assignee; }).map(function (t) { return '<option value="' + t.id + '">' + esc(t.name) + '</option>'; }).join('') + '</select><div class="ts" style="margin-top:8px">Response timer resets for the new assignee. Customer-waiting timer never resets.</div></div>' : '') +
       '</aside>';
@@ -783,18 +794,18 @@
   function pagesScreen() {
     var active = D.pages.filter(function (p) { return p.status === 'ACTIVE'; }).length;
     var q = (S.pageQuery || '').toLowerCase(), st = S.pageStatus || 'all', cf = S.pageCamp || 'all';
-    var list = D.pages.filter(function (p) { return (!q || p.name.toLowerCase().indexOf(q) >= 0) && (st === 'all' || p.status === st) && (cf === 'all' || p.camp === cf); });
+    var items_ = D.pages.filter(function (p) { return (!q || p.name.toLowerCase().indexOf(q) >= 0) && (st === 'all' || p.status === st) && (cf === 'all' || p.camp === cf); });
     return '<div class="page"><div class="page-head"><div><h1 class="h1">Pages</h1><div class="small" style="margin-top:6px">' + D.pages.length + ' pages hosted · ' + active + ' active' + (D.accAvg != null ? ' · account avg conversion ' + (D.accAvg * 100).toFixed(1) + '%' : '') + '</div></div>' +
       (canManage() ? '<button class="btn btn-primary" data-act="upload">' + ic('upload', 15) + ' Upload a new page</button>' : '') + '</div>' +
       '<div class="filters"><input class="input" id="pageSearch" placeholder="Search pages" value="' + esc(S.pageQuery || '') + '" style="width:240px;height:36px" />' +
       '<select class="select" data-pfilter="pageStatus"><option value="all">All statuses</option>' + ['ACTIVE', 'PAUSED', 'ARCHIVED'].map(function (x) { return '<option value="' + x + '"' + (st === x ? ' selected' : '') + '>' + cap(x.toLowerCase()) + '</option>'; }).join('') + '</select>' +
       '<select class="select" data-pfilter="pageCamp"><option value="all">All campaigns</option>' + D.campaigns.map(function (c) { return '<option value="' + c.id + '"' + (cf === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('') + '</select></div>' +
-      pagesTable(list) + '</div>';
+      pagesTable(items_) + '</div>';
   }
   function pageDrawer(id) {
     var p = byId(D.pages, id);
     var a = lazy('page:analytics:' + id, '/pages/' + id + '/analytics');
-    var ls = lazy('page:leads:' + id, '/leads?deployment_id=' + id + '&limit=20', function (r) { return r.leads.map(mapLead); });
+    var ls = lazy('page:leads:' + id, '/leads?deployment_id=' + id + '&limit=20', function (r) { return list(r).map(mapLead); });
     var max = a && !a.__error ? Math.max.apply(null, a.daily.map(function (d) { return d.visits; }).concat([1])) : 1;
     return drawer('w520', '<div><div class="h2">' + esc(p.name) + '</div><div class="row wrap" style="margin-top:6px"><span class="badge ' + ({ ACTIVE: 'b-green', PAUSED: 'b-amber', ARCHIVED: 'b-grey' }[p.status]) + '">' + p.status + '</span><span class="mono">' + esc(p.host) + '</span><a href="' + esc(p.url) + '" target="_blank" rel="noopener">Open page ↗</a></div></div>',
       '<div class="label">Traffic · 7 days</div>' + (a && !a.__error ? '<div class="bars" style="height:120px">' + a.daily.map(function (d) { return '<div class="bar" title="' + d.visits + ' visits · ' + d.leads + ' leads"><i style="height:' + Math.max(2, Math.round(d.visits / max * 100)) + '%;background:var(--accent-blue)"></i><span>' + new Date(d.date + 'T12:00:00Z').toLocaleDateString('en-US', { weekday: 'narrow', timeZone: 'UTC' }) + '</span></div>'; }).join('') + '</div>' : skel(1)) +
@@ -824,7 +835,7 @@
   function slaLive() {
     var sp = D.live.avgResponseTime == null ? null : Math.round(D.live.avgResponseTime / 1000);
     var today = D.live.today == null ? null : Math.round(D.live.today / 1000), m30 = D.live.thirtyDayAvg == null ? null : Math.round(D.live.thirtyDayAvg / 1000);
-    var od = lazy('sla:overdue', '/sla/overdue'), tr = lazy('sla:trend', '/sla/trend'), tm = lazy('sla:team', '/sla/team');
+    var od = lazy('sla:overdue', '/sla/overdue?limit=100'), tr = lazy('sla:trend', '/sla/trend'), tm = lazy('sla:team', '/sla/team', list);
     var ct = planOk('watchtower') ? lazy('sla:cross', '/sla/cross-tool') : null;
     var dayPanel = '';
     if (S.slaDay != null && tr && !tr.__error) {
@@ -838,16 +849,16 @@
       (today != null && m30 != null ? '<div class="small" style="margin-top:10px">Today ' + secs(today) + ' vs 30-day avg ' + secs(m30) + ' <span class="' + (today <= m30 ? 'green' : 'red') + '">' + ic(today <= m30 ? 'arrowDown' : 'arrowUp', 12) + ' ' + secs(Math.abs(today - m30)) + (today <= m30 ? ' faster' : ' slower') + '</span></div>' : '') +
       '<div class="divider"></div>' + (!tm ? skel(3) : tm.__error ? errBox(tm) : tm.map(function (u) { var w = u.avgThisWeekMs == null ? null : u.avgThisWeekMs / 1000, a = u.avg30dMs == null ? null : u.avg30dMs / 1000; return '<div class="list-row">' + av(u.id, 28) + '<span class="grow">' + esc(u.name) + '</span><span class="ts" style="width:80px">This week</span><b class="' + (u.improving === false ? 'red' : 'green') + '" style="width:80px">' + secs(w) + '</b><span class="ts" style="width:110px">30d ' + secs(a) + '</span></div>'; }).join('')) + '</div>' +
       '<div class="col gap24"><div class="card"><div class="label">SLA trend · 7 days</div>' + (!tr ? skel(1) : tr.__error ? errBox(tr) : trendBars(tr.days, S.slaDay)) + dayPanel + '</div>' +
-      '<div class="card"><div class="spread"><div class="label">Overdue now</div><span class="badge b-red">' + (od && !od.__error ? od.count : '…') + '</span></div>' + (!od ? skel(2) : od.__error ? errBox(od) : od.count ? od.leads.map(overdueRow).join('') : okEmpty()) + '</div></div></div>' +
+      '<div class="card"><div class="spread"><div class="label">Overdue now</div><span class="badge b-red">' + (od && !od.__error ? od.count : '…') + '</span></div>' + (!od ? skel(2) : od.__error ? errBox(od) : od.count ? list(od).map(overdueRow).join('') : okEmpty()) + '</div></div></div>' +
       (planOk('watchtower') ? '<div class="card" style="margin-top:24px"><div class="h3">Cross-tool SLA breaches</div>' + (!ct ? skel(2) : ct.__error ? errBox(ct) : !ct.connected ? '<div class="small" style="margin-top:8px">Connect a CRM or email platform to monitor cross-tool SLA. <a href="#/settings/integrations">Go to Integrations</a></div>' :
-        ct.breaches.length ? ct.breaches.map(function (b) { return '<div class="list-row"><span class="badge nodot ' + ({ crm: 'b-purple', email: 'b-blue', ads: 'b-amber', slack: 'b-grey' }[b.type] || 'b-grey') + '" style="width:80px;justify-content:center">' + (b.type || '').toUpperCase() + '</span><b style="width:160px">' + esc(b.leadName) + '</b><span class="grow small">' + esc(RULES[b.breachType] || b.breachType) + '</span><span style="width:120px">' + esc(b.assigneeName || '—') + '</span><span class="overdue-t" style="width:70px">+' + b.hoursExceeded + 'h</span><a class="btn btn-ghost btn-sm" href="#/leads/' + b.leadId + '">View Lead</a></div>'; }).join('') : '<div class="small" style="margin-top:8px">No cross-tool breaches right now.</div>') + '</div>' : '') +
+        list(ct).length ? list(ct).map(function (b) { return '<div class="list-row"><span class="badge nodot ' + ({ crm: 'b-purple', email: 'b-blue', ads: 'b-amber', slack: 'b-grey' }[b.type] || 'b-grey') + '" style="width:80px;justify-content:center">' + (b.type || '').toUpperCase() + '</span><b style="width:160px">' + esc(b.leadName) + '</b><span class="grow small">' + esc(RULES[b.breachType] || b.breachType) + '</span><span style="width:120px">' + esc(b.assigneeName || '—') + '</span><span class="overdue-t" style="width:70px">+' + b.hoursExceeded + 'h</span><a class="btn btn-ghost btn-sm" href="#/leads/' + b.leadId + '">View Lead</a></div>'; }).join('') : '<div class="small" style="margin-top:8px">No cross-tool breaches right now.</div>') + '</div>' : '') +
       '<div class="card" style="margin-top:24px"><div class="h3">Team SLA health</div><div class="small" style="margin-bottom:8px">Data only. No ranking.</div>' +
       (!tm || tm.__error ? '' : tm.map(function (u) { return '<div class="list-row">' + av(u.id, 28) + '<span class="grow">' + esc(u.name) + '</span><span style="width:140px">Avg ' + secs(u.avgThisWeekMs == null ? null : u.avgThisWeekMs / 1000) + '</span><span style="width:140px">Ack rate ' + (u.acknowledgmentRate == null ? '—' : Math.round(u.acknowledgmentRate * 100) + '%') + '</span><span style="width:110px" class="' + (u.breachesThisWeek ? 'red' : 'green') + '">' + u.breachesThisWeek + ' breaches</span></div>'; }).join('')) + '</div>';
   }
   var RULES = { not_contacted: 'Not moved to "Contacted" within threshold', not_proposal: 'Not moved to "Proposal Sent" within threshold', no_activity: 'No activity logged within threshold', not_enrolled: 'Not enrolled in follow-up sequence', open_rate_drop: 'Open rate dropped below threshold', no_click: 'No click recorded', spend_without_leads: 'Spending with zero leads', cpl_exceeded: 'CPL exceeded', spend_increase: 'Spend up without lead growth', discussed_not_acted: 'Discussed in Slack but not acted on' };
   function slaConfig() {
     var cfg = lazy('sla:config', '/sla/config');
-    var ct = planOk('watchtower') ? lazy('sla:crossConfig', '/sla/config/cross-tool') : [];
+    var ct = planOk('watchtower') ? lazy('sla:crossConfig', '/sla/config/cross-tool', list) : [];
     if (!cfg) return skel(4);
     if (cfg.__error) return errBox(cfg);
     function rule(r) {
@@ -890,7 +901,7 @@
   }
   function teamNotesScreen() {
     if (!planOk('growth')) return '<div class="page"><h1 class="h1">Team Notes</h1><div class="card" style="margin-top:16px"><div class="spread"><div class="small">Address notes to teammates with deadlines and attachments.</div>' + planChip('growth') + '</div></div></div>';
-    var list = D.teamNotes;
+    var items_ = D.teamNotes;
     var compose = canManage() ? '<aside class="rail"><div class="card"><div class="h3">New team note</div><div class="field" style="margin-top:12px"><label>To</label><div class="col gap4" id="tnTo">' +
       D.team.filter(function (u) { return u.id !== D.me.id; }).map(function (u) { return '<label class="checkbox"><input type="checkbox" value="' + u.id + '"/> @' + esc(u.name) + '</label>'; }).join('') + '</div></div>' +
       '<div class="field" style="margin-top:12px"><label>Attach to (optional)</label><select class="select" id="tnAttach"><option value="">Standalone</option>' + D.campaigns.map(function (c) { return '<option value="campaign:' + c.id + '">Campaign: ' + esc(c.name) + '</option>'; }).join('') +
@@ -898,7 +909,7 @@
       '<div class="field" style="margin-top:12px"><label>Deadline (optional)</label><input class="input" type="datetime-local" id="tnDue" /></div>' +
       '<textarea class="input" id="tnBody" style="margin-top:12px" placeholder="Write a note… Notes cannot be deleted once posted."></textarea><span class="errmsg hidden" id="tnErr"></span><button class="btn btn-primary btn-full" style="margin-top:12px" data-act="postTeamNote">Post Team Note</button></div></aside>' : '';
     return '<div class="page"><div class="page-head"><div><h1 class="h1">Team Notes</h1><div class="small italic" style="color:var(--text-muted);margin-top:6px">The complete workspace record. Notes cannot be deleted. Editable within 2 hours.</div></div><a class="btn btn-ghost" href="#/me">Notes addressed to me</a></div>' +
-      '<div class="dossier" style="grid-template-columns:' + (compose ? 'minmax(0,1fr) 380px' : '1fr') + '"><div class="col gap12">' + (list.length ? list.map(teamNoteCard).join('') : empty('note', 'No team notes yet.', canManage() ? 'Leave the first note for a teammate.' : '')) + '</div>' + compose + '</div></div>';
+      '<div class="dossier" style="grid-template-columns:' + (compose ? 'minmax(0,1fr) 380px' : '1fr') + '"><div class="col gap12">' + (items_.length ? items_.map(teamNoteCard).join('') : empty('note', 'No team notes yet.', canManage() ? 'Leave the first note for a teammate.' : '')) + '</div>' + compose + '</div></div>';
   }
   function myPerformance() {
     var me = byId(D.team, D.me.id) || {};
@@ -932,7 +943,7 @@
       '<div class="field" style="margin-top:20px"><label>Storage</label><div class="progress"><i style="width:' + Math.min(100, used / quota * 100).toFixed(1) + '%"></i></div><div class="ts">' + (used / 1048576).toFixed(1) + ' MB of ' + (quota / 1073741824).toFixed(0) + ' GB used</div></div></div>';
   }
   function setTeam() {
-    var inv = canManage() ? lazy('set:invites', '/team/invitations') : [];
+    var inv = canManage() ? lazy('set:invites', '/team/invitations?limit=100', list) : [];
     return '<div class="spread" style="margin-bottom:16px"><div class="h2">Team</div>' + (canManage() ? '<button class="btn btn-primary" data-act="invite">Invite Member</button>' : '') + '</div>' +
       (D.team.length === 1 ? empty('plus', 'Invite your first team member.', '', canManage() ? '<button class="btn btn-primary" data-act="invite">Invite</button>' : '') : '') +
       '<div class="table-wrap">' + D.team.map(function (u) {
@@ -972,7 +983,7 @@
     var v = lazy('set:tg', '/settings/telegram');
     if (!v) return skel(2);
     if (v.__error) return errBox(v);
-    return '<div class="card" style="max-width:720px"><div class="spread"><div class="h3">Telegram alerts</div>' + statusBadge(v.connected ? 'connected' : 'not_connected') + '</div>' + (v.botUsername ? '<div class="small">Bot: @' + esc(v.botUsername) + ' · each teammate links their chat by sending <span class="mono">/start ' + esc(D.me.id.slice(0, 8)) + '</span> (their own code) to the bot.</div>' : '') +
+    return '<div class="card" style="max-width:720px"><div class="spread"><div class="h3">Telegram alerts</div>' + statusBadge(v.connected ? 'connected' : 'not_connected') + '</div>' + (v.botUsername ? '<div class="small">Bot: @' + esc(v.botUsername) + ' · each teammate links their chat by sending <span class="mono">/start ' + esc(v.linkCode) + '</span> (their own code) to the bot.</div>' : '') +
       '<div class="field" style="margin-top:16px"><label>Bot token</label><div class="row"><div class="grow input-wrap"><input class="input mono" type="password" id="tgToken" placeholder="' + esc(v.tokenMasked || '123456:ABC-DEF…') + '" style="font-size:12px"/><span class="acts"><button data-act="eye" data-for="tgToken">' + ic('eye', 14) + '</button></span></div><button class="btn btn-primary" data-act="verifyTg">Verify & Connect</button></div></div>' +
       '<div class="setting-row" style="margin-top:12px"><div><b>Enable critical alerts</b><div class="small">SLA breaches with an inline Acknowledge button</div></div><button class="toggle ' + (v.criticalAlertsEnabled ? 'on' : '') + '" data-act="tgToggle" data-v="criticalAlertsEnabled"></button></div>' +
       '<div class="setting-row"><div><b>Daily digest summary</b></div><button class="toggle ' + (v.dailyDigestEnabled ? 'on' : '') + '" data-act="tgToggle" data-v="dailyDigestEnabled"></button></div>' +
@@ -981,7 +992,7 @@
   var INT_NAMES = {};
   var INT_LOGO = { systeme_io: ['S', '#2E7DF6'], gohighlevel: ['GH', '#1E88E5'], tally: ['T', '#111'], typeform: ['Tf', '#262627'], custom: ['{}', '#363650'], instantly: ['In', '#5B3DF5'], apollo: ['Ap', '#3A3AFF'], lemlist: ['Le', '#6C4CF6'], smartlead: ['Sm', '#0F766E'], twenty_crm: ['20', '#222'], hubspot: ['H', '#FF7A59'], salesforce: ['Sf', '#00A1E0'], umami: ['U', '#333'], activecampaign: ['AC', '#356AE6'], mailchimp: ['Mc', '#C9A300'], brevo: ['Br', '#0B996E'], notifuse: ['N', '#444'], meta_ads: ['M', '#0866FF'], google_ads: ['G', '#34A853'], slack: ['Sl', '#4A154B'], zapier: ['Z', '#FF4F00'], make: ['Mk', '#6D00CC'] };
   function setIntegrations() {
-    var v = lazy('set:int', '/integrations');
+    var v = lazy('set:int', '/integrations?limit=100', list);
     if (!v) return skel(4);
     if (v.__error) return errBox(v);
     var groups = [], by = {};
@@ -1002,7 +1013,7 @@
   }
   var EVENTS = ['lead.responded', 'lead.assigned', 'lead.received', 'campaign.completed', 'sla.breached', 'deployment.ready'];
   function setWebhooks() {
-    var inb = lazy('set:inbound', '/webhooks/inbound'), out = lazy('set:outbound', '/webhooks/outbound'), ints = lazy('set:int', '/integrations');
+    var inb = lazy('set:inbound', '/webhooks/inbound?limit=100', list), out = lazy('set:outbound', '/webhooks/outbound?limit=100', list), ints = lazy('set:int', '/integrations?limit=100', list);
     if (!inb || !out) return skel(4);
     return '<div class="col gap16" style="max-width:1080px"><div class="card"><div class="spread wrap"><div><div class="h3">Inbound webhooks</div><div class="small">External tools send lead data to these URLs. Camplo receives and attributes it automatically. Every hosted page also has its own signed webhook (see Pages).</div></div></div>' +
       '<div style="margin-top:12px">' + (inb.__error ? errBox(inb) : inb.length ? inb.map(function (w) { return '<div class="list-row"><span class="mono grow" style="word-break:break-all">' + esc(w.url) + '</span><span style="width:220px">' + esc(w.sourceLabel) + (w.campaignName ? '<div class="ts">→ ' + esc(w.campaignName) + '</div>' : '') + '</span><span class="ts" style="width:110px">' + ago(ms(w.lastReceivedAt)) + '</span><span class="badge ' + (w.status === 'active' ? 'b-green' : 'b-grey') + '">' + w.status + '</span><button class="close" data-act="copy" data-v="' + esc(w.url) + '">' + ic('copy', 14) + '</button><button class="close" data-act="deleteInbound" data-id="' + w.id + '">' + ic('x', 14) + '</button></div>'; }).join('') : '<div class="small">No named inbound webhooks yet.</div>') + '</div>' +
@@ -1038,7 +1049,11 @@
       '<div class="field"><div class="spread"><label style="font:500 12px var(--f-body);color:var(--text-secondary)">Password</label><a href="#/forgot-password" style="font-size:12px">Forgot password?</a></div><input class="input" name="password" type="password" autocomplete="current-password" required value="' + (S.demo ? 'camplo-demo' : '') + '"/></div>' +
       '<span class="errmsg hidden" id="formErr"></span><button class="btn btn-primary btn-full" type="submit">Sign in</button></form>' +
       '<div class="card" style="padding:12px;background:var(--bg-elevated)"><div class="small"><b>Demo workspace</b> — marcus@northbeam.demo / camplo-demo</div><button class="linkbtn" style="margin-top:6px" data-act="fillDemo">Use demo credentials</button></div>' +
+      '<div class="small" style="text-align:center"><a href="#/magic-link">Email me a sign-in link instead</a></div>' +
       '<div class="small" style="text-align:center">New to Camplo? <a href="#/signup">Create a workspace</a></div>');
+    if (top === 'magic-link') return authWrap(S.magicSent ? '<div class="h2" style="text-align:center">Check your email</div><p class="small" style="text-align:center">If an account exists for ' + esc(S.magicSent) + ', a sign-in link is on its way. It works once and expires in 15 minutes.</p><a href="#/login" class="small" style="text-align:center">← Back to login</a>'
+      : '<div class="h2" style="text-align:center">Sign in with a link</div><form class="col gap16" data-form="magic"><div class="field"><label>Email</label><input class="input" name="email" type="email" required placeholder="you@company.com" /></div><span class="errmsg hidden" id="formErr"></span><button class="btn btn-primary btn-full" type="submit">Email me a link</button></form><a href="#/login" class="small" style="text-align:center">← Back to password sign-in</a>');
+    if (top === 'verify') return verifyView(q.get('token'));
     if (top === 'signup') return authWrap('<div style="text-align:center"><div class="h2">Create your workspace</div><div class="small">Self-serve. Live in minutes, not weeks.</div></div>' +
       '<form class="col gap16" data-form="signup">' + [['name', 'Name', 'text'], ['email', 'Email', 'email'], ['password', 'Password (min 8 characters)', 'password'], ['workspaceName', 'Workspace name', 'text']].map(function (f) { return '<div class="field"><label>' + f[1] + '</label><input class="input" name="' + f[0] + '" type="' + f[2] + '" required ' + (f[0] === 'password' ? 'minlength="8"' : '') + '/></div>'; }).join('') +
       '<div class="field"><label>Plan</label><select class="select" name="plan"><option value="starter">Starter — $97/mo</option><option value="growth" selected>Growth — $197/mo</option><option value="watchtower">Watchtower — $347/mo</option></select></div>' +
@@ -1052,6 +1067,17 @@
     if (top === 'share') return clientView(r.parts[1]);
     if (top === 'acknowledge') return ackView(q.get('token'));
     return '';
+  }
+
+  function verifyView(token) {
+    var key = 'verify:' + token;
+    if (!C[key]) {
+      if (!pending[key]) pending[key] = api('/auth/verify?token=' + encodeURIComponent(token || '')).then(function (r) {
+        C = {}; D = null; S.flash = null; go(r.next === '/pending' ? 'pending' : r.next === '/setup' ? 'onboarding/1' : 'dashboard');
+      }, function (e) { C[key] = { __error: e.message }; render(true); }).then(function () { delete pending[key]; });
+      return authWrap('<div class="col" style="align-items:center;gap:16px"><div class="load-dots"><i></i><i></i><i></i><i></i><i></i></div><div class="small">Signing you in…</div></div>');
+    }
+    return authWrap('<div class="h3" style="text-align:center">' + esc(C[key].__error) + '</div><a class="btn btn-primary btn-full" href="#/magic-link">Send a new link</a><a href="#/login" class="small" style="text-align:center">Sign in with password</a>');
   }
 
   function clientView(token) {
@@ -1116,7 +1142,7 @@
 
   function lifecycleDrawer(id) {
     var l = byId(D.leads, id) || C['lead:' + id];
-    var lc = lazy('lead:life:' + id, '/leads/' + id + '/lifecycle');
+    var lc = lazy('lead:life:' + id, '/leads/' + id + '/lifecycle?limit=100', list);
     return drawer('', '<div><div class="h3">Lifecycle — ' + esc(l ? l.name : '') + '</div><div class="row" style="margin-top:8px">' + (l && l.campaign ? '<span class="chip chip-blue">' + esc(l.campaignName) + '</span>' : '') + (l ? (l.respondedAt ? '<span class="badge b-green">Responded</span>' : '<span class="badge b-red">Not responded</span>') : '') + '</div></div>',
       (!lc ? skel(3) : lc.__error ? errBox(lc) : timeline(lc) + (lc.some(function (e) { return e.source !== 'camplo'; }) ? '' : '<div class="small" style="margin-top:16px">No external lifecycle events yet. Connect a CRM to see the full lead journey. <a href="#/settings/integrations" data-link>Connect</a></div>')) +
       '<div class="row gap16" style="margin-top:24px"><span class="row ts"><span class="dot b"></span>Camplo</span><span class="row ts"><span class="dot" style="background:#A855F7"></span>External</span><span class="row ts"><span class="dot o"></span>Milestone</span></div>' +
@@ -1180,7 +1206,7 @@
     S.chatOpen = true; liveDrawer = null;
     document.addEventListener('keydown', escClose);
     if (!C['chat']) {
-      api('/chat/history').then(function (h) { C['chat'] = h; if (!h.messages.length) return api('/chat/suggestions').then(function (s) { C['chat:sugg'] = s; }); }, function (e) { C['chat'] = { __error: e.message, __status: e.status }; })
+      api('/chat/history?limit=100').then(function (h) { C['chat'] = Object.assign({}, h, { messages: list(h) }); if (!C['chat'].messages.length) return api('/chat/suggestions').then(function (s) { C['chat:sugg'] = s; }); }, function (e) { C['chat'] = { __error: e.message, __status: e.status }; })
         .then(function () { refreshChat(); });
     }
     refreshChat();
@@ -1238,7 +1264,7 @@
     document.getElementById('toasts').appendChild(el);
     setTimeout(function () { el.classList.add('out'); setTimeout(function () { el.remove(); }, 220); }, 3000);
   }
-  function fail(e) { toast(e.message || String(e), 'error'); }
+  function fail(e) { if (e && e.handled) return; toast(e.message || String(e), 'error'); }
   function busy(el, label) { if (!el) return function () {}; var prev = el.innerHTML; el.disabled = true; el.classList.add('loading'); el.innerHTML = '<span class="spinner"></span>' + (label ? ' ' + label : ''); return function () { el.disabled = false; el.classList.remove('loading'); el.innerHTML = prev; }; }
 
   // ================================================================ live timers
@@ -1346,6 +1372,8 @@
         if (r.checkoutUrl) { location.href = r.checkoutUrl; return; }
         if (r.next === '/login') { S.flash = 'Workspace created — sign in to continue.'; go('login'); } else go('pending');
       }, function (x) { err(x.message); });
+    } else if (kind === 'magic') {
+      api('/auth/magic-link', { method: 'POST', body: { email: data.email } }).then(function () { S.magicSent = data.email; render(); }, function (x) { err(x.message); });
     } else if (kind === 'forgot') {
       api('/auth/forgot-password', { method: 'POST', body: { email: data.email } }).then(function () { S.forgotSent = data.email; render(); }, function (x) { err(x.message); });
     } else if (kind === 'reset') {
@@ -1378,6 +1406,22 @@
     if (act === 'pageVip') api('/pages/' + t.getAttribute('data-id'), { method: 'PATCH', body: { vip: t.checked } }).then(function () { toast('VIP rule updated'); reload(true); }, fail);
   });
 
+  /** D-19: queued deployments are processed by a worker — poll the status until READY or FAILED. */
+  function waitForDeployment(id) {
+    return new Promise(function (resolve, reject) {
+      var tries = 0;
+      (function poll() {
+        api('/pages/upload/' + id + '/status').then(function (st) {
+          if (st.status === 'ready') return resolve(st);
+          if (st.status === 'failed') return reject(new Error(st.failureReason ? 'Deployment failed: ' + st.failureReason : 'Deployment failed. Try again.'));
+          var bar = document.getElementById('upProg'); if (bar) bar.style.width = Math.min(95, 40 + tries * 5) + '%';
+          if (++tries > 120) return reject(new Error('Deployment is taking longer than expected. Check Pages in a minute.'));
+          setTimeout(poll, 1500);
+        }, reject);
+      })();
+    });
+  }
+
   function uploadZip(file, entry) {
     var err = document.getElementById('upErr');
     if (!/\.zip$/i.test(file.name)) { if (err) { err.textContent = 'Only .zip files can be uploaded.'; err.classList.remove('hidden'); } return; }
@@ -1390,6 +1434,10 @@
     else { fd.append('name', file.name.replace(/\.zip$/i, '')); if (S.uploadCamp) fd.append('campaignId', S.uploadCamp); p = api('/pages/upload', { method: 'POST', body: fd }); }
     p.then(function (r) {
       if (r.status === 'needs_input') { S.entryPoints = r.entry_points; openOverlay(uploadModal()); return; }
+      if (r.status === 'processing') return waitForDeployment(r.id).then(function () { return r; });
+      return r;
+    }).then(function (r) {
+      if (!r || r.status === 'needs_input') return;
       var bar = document.getElementById('upProg'); if (bar) bar.style.width = '100%';
       if (S.redeployId) { toast('Redeployed successfully'); S.redeployId = null; closeOverlay(); reload(true); return; }
       S.uploadId = r.id; S.uploadName = file.name.replace(/\.zip$/i, '');
@@ -1486,10 +1534,10 @@
         done = busy(el);
         var camId = el.closest('[data-camp]') && el.closest('[data-camp]').getAttribute('data-camp');
         var src = camId ? C['camp:leads:' + camId].list : D.leads;
-        var oldest = src.reduce(function (m, l) { return Math.min(m, l.arrived); }, Infinity);
-        api((camId ? '/campaigns/' + camId + '/leads' : '/leads') + '?limit=200&cursor=' + encodeURIComponent(new Date(oldest).toISOString())).then(function (r) {
-          r.leads.map(mapLead).forEach(function (l) { src.push(l); });
-          if (camId) C['camp:leads:' + camId].more = r.has_more; else D.leadsEnv.has_more = r.has_more;
+        var cursor = camId ? C['camp:leads:' + camId].cursor : D.leadsEnv.next_cursor;
+        api((camId ? '/campaigns/' + camId + '/leads' : '/leads') + '?limit=100&cursor=' + encodeURIComponent(cursor || '')).then(function (r) {
+          list(r).map(mapLead).forEach(function (l) { src.push(l); });
+          if (camId) { C['camp:leads:' + camId].more = r.has_more; C['camp:leads:' + camId].cursor = r.next_cursor; } else { D.leadsEnv.has_more = r.has_more; D.leadsEnv.next_cursor = r.next_cursor; }
           render(true);
         }, function (x) { done(); fail(x); });
         break;
@@ -1502,7 +1550,7 @@
         api('/campaigns', { method: 'POST', body: {
           name: nm.value.trim(), description: document.getElementById('ncDesc').value ? '<p>' + esc(document.getElementById('ncDesc').value) + '</p>' : null, startDate: document.getElementById('ncDate').value,
           budget: bud && bud.value ? +bud.value : null, cplThreshold: cpl && cpl.value && bud && bud.value ? +cpl.value : null, currency: document.getElementById('ncCur') ? document.getElementById('ncCur').value : 'USD',
-        } }).then(function (c) { closeOverlay(); toast('Campaign created'); return loadCore().then(function () { go('campaigns/' + c.id + '/overview'); }); }, function (x) { done(); if (x.data && x.data.reason === 'plan_limit') openOverlay(upgradeModal(x.data.plan)); else fail(x); });
+        } }).then(function (c) { closeOverlay(); toast('Campaign created'); return loadCore().then(function () { go('campaigns/' + c.id + '/overview'); }); }, function (x) { done(); fail(x); });
         break;
       case 'pin':
         api('/campaigns/' + id + '/pin', { method: v === '1' ? 'POST' : 'DELETE' }).then(function () { reload(true); }, fail);
@@ -1526,6 +1574,9 @@
         var d = document.getElementById('chDesc').value.trim();
         if (d.length < 3) { document.getElementById('chDesc').classList.add('err'); break; }
         reauthAfterMutation(api('/campaigns/' + id, { method: 'PATCH', body: { change: { type: document.getElementById('chType').value, description: d } } }), 'Change logged to campaign memory').then(closeOverlay, function () {});
+        break;
+      case 'pauseCampaign':
+        reauthAfterMutation(api('/campaigns/' + id, { method: 'PATCH', body: { status: v } }), v === 'paused' ? 'Campaign paused — Health Pulse tracking stops until you resume' : 'Campaign resumed');
         break;
       case 'markComplete':
         openOverlay(modal('Mark campaign complete?', '<p class="small" style="font-size:14px">This will generate a Campaign Retrospective automatically. This cannot be undone.</p>', '<button class="btn btn-ghost" data-act="close">Cancel</button><button class="btn btn-primary" data-act="confirmComplete" data-id="' + id + '">Confirm</button>'));
@@ -1686,7 +1737,7 @@
         var kEl = document.getElementById('intKey');
         done = busy(el);
         api('/integrations/' + v + '/connect', { method: 'POST', body: kEl && kEl.value ? { apiKey: kEl.value } : { method: 'webhook' } }).then(function () { done(); closeOverlay(); toast('Connected'); delete C['set:int']; delete C['sla:crossConfig']; render(true); },
-          function (x) { done(); if (x.data && x.data.reason === 'plan_required') openOverlay(upgradeModal(x.data.plan)); else fail(x); });
+          function (x) { done(); fail(x); });
         break;
       case 'verifyInt': api('/integrations/' + v + '/verify', { method: 'POST' }).then(function (r) { toast(r.ok ? 'Verified' : 'Verification failed', r.ok ? '' : 'error'); delete C['set:int']; render(true); }, fail); break;
       case 'disconnectInt': if (confirm('Disconnect this integration?')) api('/integrations/' + v, { method: 'DELETE' }).then(function () { toast('Disconnected'); delete C['set:int']; render(true); }, fail); break;
@@ -1709,7 +1760,8 @@
         api('/settings/notifications', { method: 'PATCH', body: nb }).then(function (r) { C['set:notif'] = r; toast('Notification settings saved'); }, fail);
         break;
       case 'notifs':
-        api('/notifications').then(function (n) {
+        api('/notifications').then(function (r) {
+          var n = { notifications: list(r), unreadCount: r.unreadCount };
           D.notifs = n;
           var icons = { sla_breach: ['clock', 'red'], webhook_offline: ['link', 'amber'], insight: ['brain', 'blue'], team_note: ['note', 'blue'], assignment: ['inbox', 'blue'] };
           popover('<div class="spread" style="padding:8px 12px"><b>Notifications</b><button class="linkbtn" data-act="readAll">Mark all read</button></div>' +
@@ -1757,7 +1809,7 @@
         api('/team/invitations', { method: 'POST', body: { email: em.value, role: document.getElementById('invRole').value } }).then(function () {
           delete C['set:invites'];
           openOverlay(modal('Invitation sent', '<div class="empty" style="padding:16px"><div class="check-big">' + ic('check', 28) + '</div><p>Invitation sent to <b>' + esc(em.value) + '</b></p></div>', '<button class="btn btn-ghost" data-act="invite">Invite another</button><button class="btn btn-primary" data-act="close">Done</button>'));
-        }, function (x) { done(); if (x.data && x.data.reason === 'plan_limit') openOverlay(upgradeModal('growth')); else { ie.textContent = x.message; ie.classList.remove('hidden'); } });
+        }, function (x) { done(); if (!x.handled) { ie.textContent = x.message; ie.classList.remove('hidden'); } });
         break;
       case 'resendInvite': api('/team/invitations/' + id + '/resend', { method: 'POST' }).then(function (r) { toast('Invitation resent to ' + r.email); delete C['set:invites']; render(true); }, fail); break;
       case 'cancelInvite': api('/team/invitations/' + id, { method: 'DELETE' }).then(function () { delete C['set:invites']; render(true); }, fail); break;

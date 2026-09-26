@@ -1,13 +1,12 @@
 import { and, asc, desc, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { sendLeadMessage } from './telegram.js';
 import type { DB } from '../db/client.js';
 import {
-  campaigns, crossToolSlaBreaches, crossToolSlaRules, deployments, insights, integrations, leads, telegramConnections, tenants, users,
+  campaigns, crossToolSlaBreaches, crossToolSlaRules, deployments, insights, integrations, leads, tenants, users,
 } from '../db/schema.js';
 import { fail, assertFeature, assertRole, type AuthedContext } from '../lib/orpc.js';
-import { decrypt, hmacHex } from '../lib/crypto.js';
 import { config } from '../lib/config.js';
 import { emails, sendMail } from '../lib/mailer.js';
-import { sendAckMessage } from '../lib/telegram.js';
 import { DAY, formatDuration, speedColor } from '../domain/rules.js';
 import { avgResponseMs } from './metrics.js';
 import { createAckToken, displayId, overdueCount } from './leads.js';
@@ -155,17 +154,13 @@ export async function sendSlaAlert(db: DB, tenant: typeof tenants.$inferSelect, 
     ? await db.select().from(users).where(and(eq(users.id, l.assigneeId), isNull(users.removedAt)))
     : await db.select().from(users).where(and(eq(users.tenantId, tenant.id), isNull(users.removedAt), sql`${users.joinedAt} is not null`, eq(users.notifyEnabled, true)));
   const [dep] = l.deploymentId ? await db.select({ name: deployments.name }).from(deployments).where(eq(deployments.id, l.deploymentId)) : [];
-  const [tg] = await db.select().from(telegramConnections).where(and(eq(telegramConnections.tenantId, tenant.id), eq(telegramConnections.verified, true)));
   const minutes = Math.round((Date.now() - l.receivedAt.getTime()) / 60_000);
   const channels = new Set<string>();
   for (const u of recipients) {
     const link = await createAckToken(db, tenant.id, l.id, u.id);
     let delivered = false;
-    if (tg?.criticalAlertsEnabled && u.telegramChatId && u.notifyChannel !== 'email') {
-      const data = `acknowledge:${l.id}:${u.id}:${tenant.id}`;
-      const sig = hmacHex(config.jwtSecret, data).slice(0, 16);
-      const r = await sendAckMessage(decrypt(tg.botTokenEncrypted), u.telegramChatId, `⏱ ${l.fullName} has waited ${minutes} min (${dep?.name ?? 'webhook'}).`, `ack:${l.id.slice(0, 8)}:${sig}`.slice(0, 64));
-      if (r.ok) { delivered = true; channels.add('telegram'); }
+    if (u.telegramChatId && u.notifyChannel !== 'email' && await sendLeadMessage(db, tenant.id, u, l.id, `⏱ ${l.fullName} has waited ${minutes} min (${dep?.name ?? 'webhook'}).`)) {
+      delivered = true; channels.add('telegram');
     }
     if (!delivered || u.notifyChannel === 'both') {
       await sendMail(emails.slaAlert(u.email, l.fullName, dep?.name ?? 'webhook', minutes, link));

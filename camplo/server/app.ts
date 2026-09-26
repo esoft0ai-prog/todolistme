@@ -6,31 +6,42 @@
  */
 import express, { type NextFunction, type Request, type Response } from 'express';
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { ORPCError } from '@orpc/server';
 import { OpenAPIHandler } from '@orpc/openapi/node';
 import { onError } from '@orpc/server';
-import { and, eq, like } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { getDatabase, type DB } from './db/client.js';
-import { leads, tenants, users } from './db/schema.js';
+import { deployments, domains, leads, tenants } from './db/schema.js';
 import { router } from './routes/index.js';
 import { config } from './lib/config.js';
-import { hmacHex, safeEqual } from './lib/crypto.js';
+import { safeEqual } from './lib/crypto.js';
 import { resolveAuth, toAuthedContext, type BaseContext } from './lib/orpc.js';
 import { storageFor } from './lib/storage.js';
 import { subscribe } from './rt/hub.js';
 import { bindDatabase, maybeSweep, runSweeps } from './jobs/scheduler.js';
-import { ingestDeployment, ingestLifecycle, ingestNamed, afterRespond } from './services/leads.js';
+import { ingestDeployment, ingestLifecycle, ingestNamed } from './services/leads.js';
 import { retrospectivePdf } from './services/campaigns.js';
 import { resolveSite, serveSiteFile } from './services/pages.js';
 import { handlePolarEvent, ingestErrors, verifyPolarSignature } from './services/admin.js';
-import { telegramCall } from './lib/telegram.js';
-import { decrypt } from './lib/crypto.js';
-import { telegramConnections } from './db/schema.js';
+import { handleUpdate, webhookSecretFor } from './services/telegram.js';
 
-const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+// server/app.ts (tsx) → ../public; dist/server/app.js (compiled) → ../../public.
+const here = path.dirname(fileURLToPath(import.meta.url));
+const publicDir = [path.join(here, '..', 'public'), path.join(here, '..', '..', 'public')].find((d) => existsSync(path.join(d, 'index.html'))) ?? path.join(here, '..', 'public');
+
+/** Error body: oRPC's `{ code, status, message, data }`, plus `reason` / `required_plan` lifted to the top level (ADL D-NEW-9). */
+function errorBody(e: ORPCError<string, unknown>) {
+  const body = e.toJSON() as Record<string, unknown>;
+  const data = (e.data ?? {}) as { reason?: string; required_plan?: string };
+  if (data.reason) body.reason = data.reason;
+  if (data.required_plan) body.required_plan = data.required_plan;
+  return body;
+}
 
 const orpc = new OpenAPIHandler(router, {
+  customErrorResponseBodyEncoder: errorBody,
   interceptors: [onError((e) => {
     if (!(e instanceof ORPCError) || e.status >= 500) console.error('[api]', e);
   })],
@@ -42,7 +53,7 @@ const wrap = (fn: (req: Req, res: Response, db: DB) => Promise<unknown>) => asyn
 };
 
 function sendError(res: Response, e: unknown) {
-  if (e instanceof ORPCError) { res.status(e.status).json(e.toJSON()); return; }
+  if (e instanceof ORPCError) { res.status(e.status).json(errorBody(e)); return; }
   console.error(e);
   res.status(500).json({ code: 'INTERNAL_SERVER_ERROR', message: 'Something went wrong on our end. Try again in a moment.' });
 }
@@ -132,49 +143,17 @@ export function createApp() {
     res.json(r);
   }));
 
-  // Telegram inline "Acknowledge" button and /start linking.
-  app.post('/api/telegram/:tenantId', express.json(), wrap(async (req, res, db) => {
-    const tenantId = String(req.params.tenantId);
-    const u = req.body as { callback_query?: { id: string; data?: string; from: { id: number }; message?: { chat: { id: number }; message_id: number } }; message?: { text?: string; chat: { id: number } } };
-    const [tg] = await db.select().from(telegramConnections).where(eq(telegramConnections.tenantId, tenantId));
-    if (!tg) { res.json({ ok: true }); return; }
-    const token = decrypt(tg.botTokenEncrypted);
-    if (u.message?.text?.startsWith('/start ')) {
-      const code = u.message.text.slice(7).trim();
-      const [usr] = await db.select().from(users).where(and(eq(users.tenantId, tenantId), like(users.id, `${code}%`)));
-      if (usr) {
-        await db.update(users).set({ telegramChatId: String(u.message.chat.id) }).where(eq(users.id, usr.id));
-        await telegramCall(token, 'sendMessage', { chat_id: u.message.chat.id, text: `Linked to Camplo as ${usr.name}. You'll get SLA alerts here.` });
-      }
-    }
-    const cq = u.callback_query;
-    const m = cq?.data?.match(/^ack:([0-9a-f]{8}):([0-9a-f]{16})$/);
-    if (cq && m) {
-      const [usr] = await db.select().from(users).where(and(eq(users.tenantId, tenantId), eq(users.telegramChatId, String(cq.message?.chat.id ?? cq.from.id))));
-      const [l] = usr ? await db.select().from(leads).where(and(eq(leads.tenantId, tenantId), like(leads.id, `${m[1]}%`))) : [];
-      const expected = l && usr ? hmacHex(config.jwtSecret, `acknowledge:${l.id}:${usr.id}:${tenantId}`).slice(0, 16) : '';
-      let text = 'This acknowledgment is no longer valid.';
-      if (l && usr && safeEqual(expected, m[2])) {
-        if (l.status === 'responded') {
-          const [by] = l.respondedBy ? await db.select({ name: users.name }).from(users).where(eq(users.id, l.respondedBy)) : [];
-          text = `Already acknowledged by ${by?.name ?? 'a teammate'} at ${l.respondedAt!.toISOString().slice(11, 16)} UTC.`;
-        } else {
-          const now = new Date();
-          const claim = !l.assigneeId;
-          const [updated] = await db.update(leads).set({ status: 'responded', respondedAt: now, respondedBy: usr.id, ...(claim ? { assigneeId: usr.id, assignmentPath: 'A' as const, claimedAt: now } : {}) })
-            .where(and(eq(leads.id, l.id), eq(leads.status, 'not_responded'))).returning();
-          if (updated) {
-            const [t] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
-            await afterRespond(db, t, updated, usr);
-            text = `✓ ${usr.name} acknowledged ${l.fullName}.`;
-          }
-        }
-      }
-      await telegramCall(token, 'answerCallbackQuery', { callback_query_id: cq.id });
-      if (cq.message) await telegramCall(token, 'editMessageText', { chat_id: cq.message.chat.id, message_id: cq.message.message_id, text });
-    }
+  // Telegram webhooks (ADL D-NEW-16): the Camplo-wide bot, then per-workspace bots. Both require Telegram's
+  // secret_token header, which Camplo sets when it registers the webhook.
+  const telegramHook = (scopeOf: (req: Req) => string) => wrap(async (req, res, db) => {
+    const scope = scopeOf(req);
+    const got = req.header('x-telegram-bot-api-secret-token') ?? '';
+    if (!safeEqual(got, webhookSecretFor(scope))) { res.status(401).json({ ok: false }); return; }
+    await handleUpdate(db, scope, req.body);
     res.json({ ok: true });
-  }));
+  });
+  app.post('/api/telegram/webhook', express.json(), telegramHook(() => 'global'));
+  app.post('/api/telegram/:tenantId', express.json(), telegramHook((req) => String(req.params.tenantId)));
 
   // ---------------------------------------------------------------- SSE (8 channels)
   const sse = (channelOf: (req: Req) => string, snapshot?: (req: Req, db: DB, tenantId: string) => Promise<unknown>, tickMs?: number) => async (req: Req, res: Response) => {
@@ -218,6 +197,31 @@ export function createApp() {
   }));
 
   // Scheduler entry for Vercel Cron / external cron.
+  // ADL §4 public acknowledgment link. A GET must not mutate (mail scanners prefetch links), so it opens the
+  // acknowledge screen, which previews the lead and performs the single-use POST /api/leads/acknowledge.
+  app.get('/api/acknowledge/:token', (req, res) => {
+    const token = String(req.params.token);
+    if (!/^[A-Za-z0-9_-]{10,200}$/.test(token)) { res.status(404).json({ code: 'NOT_FOUND', message: 'This link is no longer valid.' }); return; }
+    res.redirect(302, `/#/acknowledge?token=${encodeURIComponent(token)}`);
+  });
+
+  // D-26: Caddy on-demand TLS asks before issuing a certificate. Only verified custom domains and live
+  // page subdomains get one, so nobody can make Caddy request certificates for arbitrary hosts.
+  app.get('/api/caddy/ask', wrap(async (req, res, db) => {
+    const host = String(req.query.domain ?? '').toLowerCase().replace(/\.$/, '');
+    const base = config.pagesBaseDomain.toLowerCase();
+    let ok = false;
+    if (host.endsWith(`.${base}`)) {
+      const sub = host.slice(0, -(base.length + 1));
+      const [d] = await db.select({ id: deployments.id }).from(deployments).where(and(eq(deployments.subdomain, sub), eq(deployments.status, 'ready')));
+      ok = !!d;
+    } else if (host) {
+      const [d] = await db.select({ id: domains.id }).from(domains).where(and(eq(domains.domainName, host), eq(domains.status, 'verified')));
+      ok = !!d;
+    }
+    res.status(ok ? 200 : 404).end();
+  }));
+
   app.get('/api/cron', wrap(async (req, res, db) => {
     const auth = req.header('authorization') ?? '';
     if (!config.cronSecret || auth !== `Bearer ${config.cronSecret}`) { res.status(401).json({ ok: false }); return; }
