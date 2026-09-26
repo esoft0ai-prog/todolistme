@@ -44,7 +44,7 @@ export function getDatabase(): Promise<Database> {
       const d = await createDatabase();
       if (config.seedDemo) {
         const { seedIfEmpty } = await import('./seed.js');
-        await seedIfEmpty(d.db);
+        await seedIfEmpty(d.db, { deterministic: d.kind === 'pglite' });
       }
       return d;
     })();

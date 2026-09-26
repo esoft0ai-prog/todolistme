@@ -46,7 +46,7 @@ recommendations and the LangGraph agent are enabled. `apply_action` is stored bu
 
 | Variable | Purpose |
 |---|---|
-| `DATABASE_URL` | Postgres connection. **Required for real use** — without it data is per-instance and ephemeral |
+| `DATABASE_URL` (or `POSTGRES_URL`) | Postgres connection. **Required for real use** — without it data is per-instance and ephemeral |
 | `JWT_SECRET` | HS256 signing key. Required in production |
 | `ENCRYPTION_KEY` | 32 bytes, base64 or hex, for encrypted columns. Required in production |
 | `APP_URL` | Public base URL used in links and webhook URLs |
@@ -71,8 +71,10 @@ recommendations and the LangGraph agent are enabled. `apply_action` is stored bu
 A daily Vercel Cron (the Hobby-plan limit) hits `/api/cron`; sweeps also run at most once a minute on incoming traffic. On Pro, make the cron hourly.
 
 Known limits on Vercel without extra services:
-- Without `DATABASE_URL` each function instance boots its own seeded in-memory database (~6 s cold start). Logins,
-  writes and SSE are only consistent within one instance. Set `DATABASE_URL` (e.g. Neon) for real data.
+- Without `DATABASE_URL` (or `POSTGRES_URL`) each function instance boots its own in-memory database (~6 s cold start).
+  The demo seed is deterministic there (same ids, tokens and subdomains on every instance), so logins work across
+  instances, but **writes stay on the instance that handled them** and vanish when it is recycled. Refresh sessions are
+  per-instance too, so the demo deploy sets `ACCESS_TOKEN_TTL_SECONDS=43200`. Attach Postgres (e.g. Neon) for real data.
 - SSE streams are cut at the function's max duration; the client reconnects automatically. Cross-instance events need `REDIS_URL`.
 - Uploaded pages and logos go to Postgres unless S3/R2 is configured.
 

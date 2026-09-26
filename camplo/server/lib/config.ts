@@ -4,7 +4,7 @@ const num = (v: string | undefined, d: number) => (v && !Number.isNaN(Number(v))
 export const config = {
   env: process.env.NODE_ENV ?? 'development',
   appUrl: process.env.APP_URL ?? 'http://localhost:4173',
-  databaseUrl: process.env.DATABASE_URL ?? '',
+  databaseUrl: process.env.DATABASE_URL ?? process.env.POSTGRES_URL ?? '',
   /** Where embedded PGlite keeps data when DATABASE_URL is unset. Empty = in-memory. */
   pgliteDir: process.env.PGLITE_DIR ?? '',
   seedDemo: process.env.SEED_DEMO !== 'false',

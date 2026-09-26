@@ -7,17 +7,43 @@ import { sql } from 'drizzle-orm';
 import type { DB } from './client.js';
 import * as s from './schema.js';
 import { hashPassword } from '../lib/auth.js';
-import { encrypt, randomToken } from '../lib/crypto.js';
+import { createHash } from 'node:crypto';
+import { encrypt } from '../lib/crypto.js';
 import { config } from '../lib/config.js';
 
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
 export const DEMO_EMAIL = 'marcus@northbeam.demo';
 export const DEMO_PASSWORD = process.env.DEMO_PASSWORD ?? 'camplo-demo';
 
-export async function seedIfEmpty(db: DB) {
+/** Seed tokens are derived from a counter, not random, so every fresh instance builds the same workspace. */
+let tokCounter = 0;
+function tok(bytes: number): string {
+  return createHash('sha256').update(`camplo-demo-token:${tokCounter++}`).digest('base64url').slice(0, Math.ceil((bytes * 4) / 3));
+}
+
+/**
+ * `deterministic` swaps every `id` default for a counter-derived UUID while seeding. Used for the embedded,
+ * per-instance database (e.g. serverless without DATABASE_URL): each instance then holds byte-identical demo
+ * rows, so a session issued by one instance resolves on any other.
+ */
+export async function seedIfEmpty(db: DB, opts: { deterministic?: boolean } = {}) {
   const [{ n }] = await db.select({ n: sql<number>`count(*)` }).from(s.tenants);
   if (Number(n) > 0) return false;
-  await seedDemo(db);
+  tokCounter = 0;
+  if (!opts.deterministic) { await seedDemo(db); return true; }
+  const rows = await db.execute(sql`select table_name from information_schema.columns
+    where table_schema = 'public' and column_name = 'id' and column_default like 'gen_random_uuid%' order by table_name`);
+  const tables = ((rows as unknown as { rows?: Array<{ table_name: string }> }).rows ?? (rows as unknown as Array<{ table_name: string }>)).map((r) => r.table_name);
+  await db.execute(sql`create sequence if not exists camplo_seed_seq`);
+  await db.execute(sql.raw(`create or replace function camplo_seed_uuid() returns uuid language sql as $$ select (substr(h, 1, 12) || '4' || substr(h, 14, 3) || substr('89ab', ('x' || substr(h, 17, 1))::bit(4)::int % 4 + 1, 1) || substr(h, 18, 15))::uuid from (select md5('camplo-demo:' || nextval('camplo_seed_seq')) as h) v $$`));
+  for (const t of tables) await db.execute(sql.raw(`alter table "${t}" alter column id set default camplo_seed_uuid()`));
+  try {
+    await seedDemo(db);
+  } finally {
+    for (const t of tables) await db.execute(sql.raw(`alter table "${t}" alter column id set default gen_random_uuid()`));
+    await db.execute(sql`drop function if exists camplo_seed_uuid()`);
+    await db.execute(sql`drop sequence if exists camplo_seed_seq`);
+  }
   return true;
 }
 
@@ -73,8 +99,8 @@ export async function seedDemo(db: DB) {
   const P: Array<typeof s.deployments.$inferSelect> = [];
   for (const [name, c, deployedDays, lastMin, visits, vip] of pageDefs) {
     const [d] = await db.insert(s.deployments).values({
-      tenantId: T, campaignId: c.id, name, subdomain: `${name}-${randomToken(3).toLowerCase().replace(/[^a-z0-9]/g, 'x').slice(0, 4)}`, storagePath: 'pending',
-      status: 'ready', storageSizeBytes: 1400, webhookSecretEncrypted: encrypt(randomToken(24)), deployedAt: ago(deployedDays * DAY), vip,
+      tenantId: T, campaignId: c.id, name, subdomain: `${name}-${tok(3).toLowerCase().replace(/[^a-z0-9]/g, 'x').slice(0, 4)}`, storagePath: 'pending',
+      status: 'ready', storageSizeBytes: 1400, webhookSecretEncrypted: encrypt(tok(24)), deployedAt: ago(deployedDays * DAY), vip,
       servingState: name === 'summer-main' ? 'archived' : name === 'lekki-brochure' ? 'paused' : 'active',
       earlyWarningActive: deployedDays < 3, previousStoragePath: name === 'bf-bundle-b' ? `sites/${T}/prev/` : null, previousDeployedAt: name === 'bf-bundle-b' ? ago(3 * DAY) : null,
     }).returning();
@@ -188,7 +214,7 @@ export async function seedDemo(db: DB) {
 
   // Integrations (Watchtower: several connected) + cross-tool rules/breaches.
   const [twenty] = await db.insert(s.integrations).values({ tenantId: T, provider: 'twenty_crm', connectionMethod: 'api_key', apiKeyEncrypted: encrypt('twenty_demo_key_7f3a'), activeModes: ['receive', 'send', 'query'], status: 'connected', lastVerifiedAt: ago(DAY) }).returning();
-  await db.update(s.integrations).set({ webhookUrl: `${config.appUrl}/api/v1/lifecycle/${twenty.id}/${randomToken(18)}` }).where(sql`${s.integrations.id} = ${twenty.id}`);
+  await db.update(s.integrations).set({ webhookUrl: `${config.appUrl}/api/v1/lifecycle/${twenty.id}/${tok(18)}` }).where(sql`${s.integrations.id} = ${twenty.id}`);
   await db.insert(s.integrations).values([
     { tenantId: T, provider: 'tally', connectionMethod: 'webhook', activeModes: ['receive'], status: 'connected', lastVerifiedAt: ago(DAY) },
     { tenantId: T, provider: 'umami', connectionMethod: 'api_key', apiKeyEncrypted: encrypt('umami_demo_key_91c2'), activeModes: ['query'], status: 'connected', lastVerifiedAt: ago(DAY) },
@@ -203,7 +229,7 @@ export async function seedDemo(db: DB) {
     { tenantId: T, leadId: byName('Grace Lawal').id, integrationId: twenty.id, ruleId: rule.id, breachType: 'not_contacted', hoursExceeded: 3, detectedAt: ago(2 * HOUR) },
     { tenantId: T, leadId: byName('Joy Ekpo').id, integrationId: twenty.id, ruleId: rule.id, breachType: 'not_contacted', hoursExceeded: 11, detectedAt: ago(5 * HOUR) },
   ]);
-  const [ib] = await db.insert(s.inboundWebhooks).values({ tenantId: T, sourceLabel: 'Instantly — warm replies', url: 'pending', secretEncrypted: encrypt(randomToken(24)), campaignId: bf.id, lastReceivedAt: ago(5 * HOUR) }).returning();
+  const [ib] = await db.insert(s.inboundWebhooks).values({ tenantId: T, sourceLabel: 'Instantly — warm replies', url: 'pending', secretEncrypted: encrypt(tok(24)), campaignId: bf.id, lastReceivedAt: ago(5 * HOUR) }).returning();
   await db.update(s.inboundWebhooks).set({ url: `${config.appUrl}/api/v1/hooks/${ib.id}` }).where(sql`${s.inboundWebhooks.id} = ${ib.id}`);
 
   // Campaign memory: operator changes with measured outcomes.
