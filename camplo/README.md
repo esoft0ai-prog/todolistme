@@ -68,7 +68,7 @@ recommendations and the LangGraph agent are enabled. `apply_action` is stored bu
 
 `vercel.json` sets root-relative build settings (project root directory: `camplo`): `npm run vercel-build` compiles
 `server/` to `dist/`, static files come from `public/`, and everything else rewrites to the `api/index.js` function.
-An hourly Vercel Cron hits `/api/cron` for SLA/webhook/digest sweeps.
+A daily Vercel Cron (the Hobby-plan limit) hits `/api/cron`; sweeps also run at most once a minute on incoming traffic. On Pro, make the cron hourly.
 
 Known limits on Vercel without extra services:
 - Without `DATABASE_URL` each function instance boots its own seeded in-memory database (~6 s cold start). Logins,
