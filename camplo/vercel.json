@@ -11,7 +11,10 @@
       "includeFiles": "{dist/**,node_modules/@electric-sql/pglite/dist/**,node_modules/pdfkit/js/data/**}"
     }
   },
-  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }],
+  "rewrites": [
+    { "source": "/admin", "destination": "/admin.html" },
+    { "source": "/(.*)", "destination": "/api/index" }
+  ],
   "crons": [{ "path": "/api/cron", "schedule": "0 6 * * *" }],
   "headers": [
     { "source": "/(.*)", "headers": [

@@ -83,6 +83,13 @@ ADL §5 names are primary; the older names in brackets still work.
 | `CRON_SECRET` | Bearer token for `/api/cron` (Vercel Cron sends it automatically) |
 | `HINDSIGHT_API_URL`, `HINDSIGHT_API_KEY` | Hindsight memory (one bank per workspace); relational fallback otherwise |
 
+## Super Admin console
+
+`/admin` is a separate sign-in (ADL D-33): email + password + a 6-digit TOTP code from an authenticator app. It lists
+accounts (activate / suspend / flag, fee override, internal notes, history) and platform health — aggregate counts only.
+The first Super Admin is created from `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD` and `ADMIN_TOTP_SECRET` (base32) on the
+first login attempt; once a database is attached, changing those variables does not change an existing admin.
+
 ## Self-hosting (ADL D-7, DokPloy)
 
 ```bash
