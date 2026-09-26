@@ -11,6 +11,7 @@
  * full canonical string — the user comes from the chat that pressed it and the tenant from the lead, so the same
  * three facts are bound by the signature.
  */
+import { platform } from '../lib/platform.js';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { deployments, leads, telegramConnections, tenants, users } from '../db/schema.js';
@@ -24,8 +25,8 @@ const hex = (uuid: string) => uuid.replace(/-/g, '');
 const uuidOf = (h: string) => `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 
 /** secret_token registered with setWebhook for one bot scope ('global' or a tenant id). */
-export function webhookSecretFor(scope: string): string {
-  return hmacHex(config.telegramWebhookSecret || config.jwtSecret, `telegram-webhook:${scope}`).slice(0, 48);
+export async function webhookSecretFor(scope: string): Promise<string> {
+  return hmacHex((await platform()).telegram.webhookSecret || config.jwtSecret, `telegram-webhook:${scope}`).slice(0, 48);
 }
 
 export function ackSignature(leadId: string, userId: string, tenantId: string): string {
@@ -40,14 +41,15 @@ export function ackCallbackData(leadId: string, userId: string, tenantId: string
 export async function botFor(db: DB, tenantId: string): Promise<{ token: string; scope: string; criticalAlerts: boolean } | null> {
   const [tg] = await db.select().from(telegramConnections).where(and(eq(telegramConnections.tenantId, tenantId), eq(telegramConnections.verified, true)));
   if (tg) return { token: decrypt(tg.botTokenEncrypted), scope: tenantId, criticalAlerts: tg.criticalAlertsEnabled };
-  if (config.telegramBotToken) return { token: config.telegramBotToken, scope: 'global', criticalAlerts: true };
+  const global = (await platform(db)).telegram.botToken;
+  if (global) return { token: global, scope: 'global', criticalAlerts: true };
   return null;
 }
 
 /** Register the webhook for a bot so /start linking and Acknowledge buttons reach Camplo. */
 export async function registerWebhook(token: string, scope: string) {
   const url = scope === 'global' ? `${config.appUrl}/api/telegram/webhook` : `${config.appUrl}/api/telegram/${scope}`;
-  return telegramCall(token, 'setWebhook', { url, secret_token: webhookSecretFor(scope), allowed_updates: ['message', 'callback_query'] });
+  return telegramCall(token, 'setWebhook', { url, secret_token: await webhookSecretFor(scope), allowed_updates: ['message', 'callback_query'] });
 }
 
 /** Code a member sends as `/start <code>`: their user id without dashes (unique across workspaces). */
@@ -60,7 +62,7 @@ interface Update {
 
 /** Handle one Telegram update for a bot scope. The caller has already checked the secret_token header. */
 export async function handleUpdate(db: DB, scope: string, u: Update): Promise<void> {
-  const token = scope === 'global' ? config.telegramBotToken : (await botFor(db, scope))?.token;
+  const token = scope === 'global' ? (await platform(db)).telegram.botToken : (await botFor(db, scope))?.token;
   if (!token) return;
 
   const start = u.message?.text?.match(/^\/start\s+([0-9a-f]{8,32})$/i);

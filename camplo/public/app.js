@@ -140,6 +140,14 @@
   }
 
   // ================================================================ utils
+  // ---------------------------------------------------------------- platform branding + prices (Super Admin settings)
+  var PF = { productName: 'Camplo', currency: 'USD', prices: { starter: 97, growth: 197, watchtower: 347, agency: 597 } };
+  function brandify(html) {
+    var n = PF.productName;
+    if (!n || n === 'Camplo') return html;
+    return html.replace(/>C<span>\.<\/span>/g, '>' + esc(n.charAt(0).toUpperCase()) + '<span>.</span>').replace(/\bCamplo\b/g, esc(n));
+  }
+  function planPrice(p) { var v = PF.prices[p]; return (PF.currency === 'USD' ? '$' : PF.currency + ' ') + (v == null ? '—' : v); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function byId(list, id) { for (var i = 0; i < (list || []).length; i++) if (list[i].id === id) return list[i]; return null; }
   function user(id) { return byId(D && D.team, id) || { name: 'Former member', initials: '·' }; }
@@ -232,7 +240,7 @@
     else if (!D) { html = bootScreen(); boot(); }
     else html = shell(r.parts, r.query);
     var y = window.scrollY;
-    app.innerHTML = html;
+    app.innerHTML = brandify(html);
     if (soft) window.scrollTo(0, y); else window.scrollTo(0, 0);
     if (S.chatOpen && soft) refreshChat();
     tick(); tickSlow();
@@ -1056,7 +1064,7 @@
     if (top === 'verify') return verifyView(q.get('token'));
     if (top === 'signup') return authWrap('<div style="text-align:center"><div class="h2">Create your workspace</div><div class="small">Self-serve. Live in minutes, not weeks.</div></div>' +
       '<form class="col gap16" data-form="signup">' + [['name', 'Name', 'text'], ['email', 'Email', 'email'], ['password', 'Password (min 8 characters)', 'password'], ['workspaceName', 'Workspace name', 'text']].map(function (f) { return '<div class="field"><label>' + f[1] + '</label><input class="input" name="' + f[0] + '" type="' + f[2] + '" required ' + (f[0] === 'password' ? 'minlength="8"' : '') + '/></div>'; }).join('') +
-      '<div class="field"><label>Plan</label><select class="select" name="plan"><option value="starter">Starter — $97/mo</option><option value="growth" selected>Growth — $197/mo</option><option value="watchtower">Watchtower — $347/mo</option></select></div>' +
+      '<div class="field"><label>Plan</label><select class="select" name="plan"><option value="starter">Starter — ' + planPrice('starter') + '/mo</option><option value="growth" selected>Growth — ' + planPrice('growth') + '/mo</option><option value="watchtower">Watchtower — ' + planPrice('watchtower') + '/mo</option></select></div>' +
       '<span class="errmsg hidden" id="formErr"></span><button class="btn btn-primary btn-full" type="submit">Create account</button></form><div class="small" style="text-align:center">Already have an account? <a href="#/login">Log in</a></div>');
     if (top === 'forgot' || top === 'forgot-password') return authWrap(S.forgotSent ? '<div class="h2" style="text-align:center">Check your email</div><p class="small" style="text-align:center">If an account exists for ' + esc(S.forgotSent) + ', you\'ll receive a reset link shortly.</p><a href="#/login" class="small" style="text-align:center">← Back to login</a>'
       : '<div class="h2" style="text-align:center">Reset your password</div><form class="col gap16" data-form="forgot"><div class="field"><label>Email</label><input class="input" name="email" type="email" required placeholder="you@company.com" /></div><button class="btn btn-primary btn-full" type="submit">Send Reset Link</button></form><a href="#/login" class="small" style="text-align:center">← Back to login</a>');
@@ -1125,20 +1133,20 @@
   // ================================================================ overlays
   function closeOverlay() { overlay.innerHTML = ''; S.chatOpen = false; document.removeEventListener('keydown', escClose); }
   function escClose(e) { if (e.key === 'Escape') closeOverlay(); }
-  function openOverlay(html) { overlay.innerHTML = '<div class="scrim" data-act="close"></div>' + html; document.addEventListener('keydown', escClose); tick(); tickSlow(); }
+  function openOverlay(html) { overlay.innerHTML = brandify('<div class="scrim" data-act="close"></div>' + html); document.addEventListener('keydown', escClose); tick(); tickSlow(); }
   function modal(title, body, foot) { return '<div class="modal" role="dialog"><div class="modal-head"><div class="h2">' + title + '</div><button class="close" data-act="close" aria-label="Close">' + ic('x', 18) + '</button></div>' + body + (foot ? '<div class="modal-foot">' + foot + '</div>' : '') + '</div>'; }
   function drawer(cls, head, body) { return '<aside class="drawer ' + cls + '"><div class="drawer-head">' + head + '<button class="close" data-act="close" aria-label="Close">' + ic('x', 18) + '</button></div><div class="drawer-body">' + body + '</div></aside>'; }
   function popover(html, anchor, width) {
     var r = anchor.getBoundingClientRect();
     var left = Math.min(window.innerWidth - width - 12, Math.max(12, r.right - width));
-    overlay.innerHTML = '<div class="scrim" style="background:transparent;backdrop-filter:none" data-act="close"></div><div class="popover" style="top:' + (r.bottom + 8) + 'px;left:' + left + 'px;width:' + width + 'px;max-height:70vh;overflow:auto">' + html + '</div>';
+    overlay.innerHTML = '<div class="scrim" style="background:transparent;backdrop-filter:none" data-act="close"></div><div class="popover" style="top:' + (r.bottom + 8) + 'px;left:' + left + 'px;width:' + width + 'px;max-height:70vh;overflow:auto">' + brandify(html) + '</div>';
     document.addEventListener('keydown', escClose); tickSlow();
   }
   /** Drawers that load data re-render themselves when data arrives. */
   var liveDrawer = null;
   function openLive(fn) { liveDrawer = fn; openOverlay(fn()); }
   var _render = render;
-  render = function (soft) { _render(soft); if (soft && liveDrawer && overlay.querySelector('.drawer') && !S.chatOpen) { overlay.innerHTML = '<div class="scrim" data-act="close"></div>' + liveDrawer(); tick(); tickSlow(); } };
+  render = function (soft) { _render(soft); if (soft && liveDrawer && overlay.querySelector('.drawer') && !S.chatOpen) { overlay.innerHTML = brandify('<div class="scrim" data-act="close"></div>' + liveDrawer()); tick(); tickSlow(); } };
 
   function lifecycleDrawer(id) {
     var l = byId(D.leads, id) || C['lead:' + id];
@@ -1197,7 +1205,7 @@
     if (!S.chatOpen) return;
     var draft = document.getElementById('chatInput');
     var val = draft ? draft.value : '';
-    overlay.innerHTML = '<div class="scrim" data-act="close" style="background:rgba(5,5,8,0.3)"></div>' + chatPanel();
+    overlay.innerHTML = brandify('<div class="scrim" data-act="close" style="background:rgba(5,5,8,0.3)"></div>' + chatPanel());
     var sc = document.getElementById('chatScroll'); if (sc) sc.scrollTop = sc.scrollHeight;
     var inp = document.getElementById('chatInput');
     if (inp) { inp.value = val; document.getElementById('chatSend').disabled = !val.trim(); if (window.innerWidth > 900 && !S.chatPending) inp.focus(); }
@@ -1250,10 +1258,10 @@
     return modal(S.redeployId ? 'Upload new version' : 'Upload a new page', steps + body, foot);
   }
   function upgradeModal(target) {
-    var price = { growth: 197, watchtower: 347, agency: 597 }[target] || 347;
+    var price = planPrice(target);
     var bullets = { growth: ['AI Chat and the Morning Intelligence Brief', 'UTM attribution, Health Pulse and 72-hour early warning', 'Budget tracking with CPL alerts and one connected tool'], watchtower: ['Diagnostic and strategic recommendations with full campaign memory', 'Cross-tool SLA monitoring and unlimited connected tools', 'Auto-generated Campaign Retrospectives with branded PDF'], agency: ['White-label retrospectives with your logo only', 'Client sub-accounts', 'Everything in Watchtower'] }[target] || [];
     return modal('Upgrade to ' + cap(target), '<div class="row gap12"><span class="chip">Current: ' + cap(D.plan) + '</span>' + ic('chev', 14) + '<span class="chip chip-blue">' + cap(target) + '</span></div><ul class="small" style="line-height:1.9;margin:20px 0 0;padding-left:18px">' + bullets.map(function (b) { return '<li>' + b + '</li>'; }).join('') + '</ul><span class="errmsg hidden" id="upgErr"></span>',
-      '<button class="linkbtn" data-act="close" style="margin-right:auto;color:var(--text-muted)">Maybe later</button>' + (target === 'agency' ? '<button class="btn btn-primary disabled" disabled>Agency plan arrives in v2</button>' : '<button class="btn btn-primary" data-act="doUpgrade" data-plan="' + target + '">Upgrade to ' + cap(target) + ' — $' + price + '/month</button>'));
+      '<button class="linkbtn" data-act="close" style="margin-right:auto;color:var(--text-muted)">Maybe later</button>' + (target === 'agency' ? '<button class="btn btn-primary disabled" disabled>Agency plan arrives in v2</button>' : '<button class="btn btn-primary" data-act="doUpgrade" data-plan="' + target + '">Upgrade to ' + cap(target) + ' — ' + price + '/month</button>'));
   }
 
   // ================================================================ toast
@@ -1855,5 +1863,12 @@
     return all.filter(function (r) { return r.recommendation_id === id; })[0];
   }
 
+  // Branding and prices set by the Super Admin; the app renders with defaults until they arrive.
+  fetch('/api/public/platform').then(function (r) { return r.ok ? r.json() : null; }).then(function (p) {
+    if (!p) return;
+    PF = p;
+    if (p.productName && p.productName !== 'Camplo') document.title = p.productName + ' — ' + (p.tagline || '');
+    render(true);
+  }, function () {});
   render();
 })();

@@ -1,44 +1,75 @@
 /** Transactional email: SMTP when SMTP_HOST is set (ADL §5), else the Resend HTTP API, else console. */
 import type { Transporter } from 'nodemailer';
 import { config } from './config.js';
+import { platform, type PlatformSettings } from './platform.js';
 
 export interface Mail { to: string; subject: string; text: string; html?: string }
 /** Last messages sent — inspected by tests and useful in local dev. */
 export const outbox: Mail[] = [];
 
 export async function sendMail(m: Mail): Promise<void> {
+  const p = await platform();
+  // Branding: the Super Admin's product name replaces "Camplo" in every template.
+  const brand = p.branding.productName;
+  if (brand && brand !== 'Camplo') {
+    const re = /\bCamplo\b/g;
+    m = { ...m, subject: m.subject.replace(re, brand), text: m.text.replace(re, brand), html: m.html?.replace(re, brand) };
+  }
   outbox.push(m);
   if (outbox.length > 200) outbox.shift();
-  if (config.smtp.host) {
+  const e = p.email;
+  const from = /</.test(e.fromAddress) ? e.fromAddress : `${p.branding.emailFromName || brand} <${e.fromAddress}>`;
+  if (e.smtpHost) {
     try {
-      const t = await smtp();
-      await t.sendMail({ from: config.emailFrom, to: m.to, subject: m.subject, text: m.text, html: m.html });
-    } catch (e) {
-      console.error('[mail] smtp send failed', (e as Error).message);
+      const t = await smtp(e);
+      await t.sendMail({ from, to: m.to, subject: m.subject, text: m.text, html: m.html });
+    } catch (err) {
+      console.error('[mail] smtp send failed', (err as Error).message);
     }
     return;
   }
-  if (!config.resendApiKey) {
+  if (!e.resendApiKey) {
     if (config.env !== 'test') console.info(`[mail] to=${m.to} subject="${m.subject}"`);
     return;
   }
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${config.resendApiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: config.emailFrom, to: m.to, subject: m.subject, text: m.text, html: m.html }),
+    headers: { Authorization: `Bearer ${e.resendApiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from, to: m.to, subject: m.subject, text: m.text, html: m.html }),
   });
   if (!res.ok) console.error(`[mail] send failed ${res.status}`);
 }
 
-let transport: Transporter | null = null;
-async function smtp(): Promise<Transporter> {
-  if (transport) return transport;
+/** Sends one message and reports failure to the caller (Super Admin "send test email"). */
+export async function sendTestMail(to: string): Promise<{ ok: boolean; via: 'smtp' | 'resend' | 'console'; error?: string }> {
+  const p = await platform();
+  const e = p.email;
+  const via = e.smtpHost ? 'smtp' : e.resendApiKey ? 'resend' : 'console';
+  const from = /</.test(e.fromAddress) ? e.fromAddress : `${p.branding.emailFromName || p.branding.productName} <${e.fromAddress}>`;
+  const msg = { from, to, subject: `${p.branding.productName} test email`, text: 'Email delivery is configured correctly.' };
+  try {
+    if (via === 'smtp') await (await smtp(e)).sendMail(msg);
+    else if (via === 'resend') {
+      const r = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${e.resendApiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(msg) });
+      if (!r.ok) return { ok: false, via, error: `Resend answered ${r.status}` };
+    }
+    return { ok: true, via };
+  } catch (err) {
+    return { ok: false, via, error: (err as Error).message };
+  }
+}
+
+let transport: { key: string; t: Transporter } | null = null;
+async function smtp(e: PlatformSettings['email']): Promise<Transporter> {
+  const key = `${e.smtpHost}|${e.smtpPort}|${e.smtpUser}|${e.smtpPass}`;
+  if (transport?.key === key) return transport.t;
   const { createTransport } = await import('nodemailer');
-  transport = createTransport({
-    host: config.smtp.host, port: config.smtp.port, secure: config.smtp.port === 465,
-    ...(config.smtp.user ? { auth: { user: config.smtp.user, pass: config.smtp.pass } } : {}),
+  const t = createTransport({
+    host: e.smtpHost, port: e.smtpPort, secure: e.smtpPort === 465,
+    ...(e.smtpUser ? { auth: { user: e.smtpUser, pass: e.smtpPass } } : {}),
   });
-  return transport;
+  transport = { key, t };
+  return t;
 }
 
 export const emails = {

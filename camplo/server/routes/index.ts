@@ -16,7 +16,11 @@ import * as set from '../services/settings.js';
 import * as intel from '../services/intelligence.js';
 import * as admin from '../services/admin.js';
 import { queueDepth } from '../jobs/scheduler.js';
-import { bearer } from '../lib/orpc.js';
+import { bearer, fail } from '../lib/orpc.js';
+import { describePlatform, platform, publicPlatform, savePlatformSection, SECRETS, SECTIONS } from '../lib/platform.js';
+import { sendTestMail } from '../lib/mailer.js';
+import { testPolar } from '../lib/polar.js';
+import { verifyProvider } from '../ai/router.js';
 import { decodeCursor, envelope, pageIn, pageQuery, paginate } from '../lib/paginate.js';
 
 /** P-4: `{ id }` path input plus `limit` / `cursor`. */
@@ -256,6 +260,7 @@ const miscRoutes = {
   notifications: authed.route(r('GET', '/notifications')).input(pageQuery).handler(async ({ input, context }) => { const n = await ws.listNotifications(context); return { unreadCount: n.unreadCount, ...paginate(n.notifications, input) }; }),
   readNotification: authed.route(r('POST', '/notifications/{id}/read')).input(z.object({ id: z.union([id, z.literal('all')]) })).handler(({ input, context }) => ws.markNotificationRead(context, input.id)),
   search: authed.route(r('GET', '/search')).input(z.object({ q: z.string().max(100) })).handler(({ input, context }) => ws.search(context, input.q)),
+  publicPlatform: pub.route(r('GET', '/public/platform')).handler(({ context }) => publicPlatform(context.db)),
   publicCampaign: pub.route(r('GET', '/public/campaigns/{shareToken}')).input(z.object({ shareToken: z.string() })).handler(({ input, context }) => camp.publicCampaign(context.db, input.shareToken)),
 };
 
@@ -300,6 +305,36 @@ const settingsRoutes = {
   })).handler(({ input, context }) => set.patchNotificationSettings(context, input)),
 };
 
+// ------------------------------------------------------------------ platform settings (Super Admin)
+const str = (max = 500) => z.string().max(max).nullable().optional(); // null / '' = back to the env default
+const secret = z.string().max(4000).nullable().optional();           // undefined = keep, '' = clear
+const perPlanOf = <T extends z.ZodTypeAny>(t: T) => z.object({ starter: t, growth: t, watchtower: t, agency: t }).partial();
+const limitN = z.number().int().min(-1).max(1_000_000); // -1 = unlimited
+const PLATFORM_SCHEMAS = {
+  branding: z.object({ productName: str(60), tagline: str(160), supportEmail: z.string().email().nullable().optional(), emailFromName: str(80) }),
+  pricing: z.object({
+    currency: z.string().regex(/^[A-Z]{3}$/).nullable().optional(),
+    plans: perPlanOf(z.object({
+      price: z.number().min(0).max(1_000_000).optional(), deepBudgetUsd: z.number().min(0).max(100_000).optional(),
+      limits: z.object({ campaigns: limitN, deployments: limitN, members: limitN, connectedTools: limitN }).partial().optional(),
+    })).nullable().optional(),
+    addOns: z.object({ extraDeploymentMonthly: z.number().min(0).max(100_000).optional() }).nullable().optional(),
+  }),
+  billing: z.object({
+    polarAccessToken: secret, polarWebhookSecret: secret, polarOrganizationId: str(200), polarApiUrl: z.string().url().nullable().optional(),
+    productIds: perPlanOf(z.string().max(200)).nullable().optional(), checkoutUrls: perPlanOf(z.union([z.string().url(), z.literal('')])).nullable().optional(),
+    allowDirectPlanChange: z.boolean().nullable().optional(),
+  }),
+  email: z.object({ smtpHost: str(255), smtpPort: z.number().int().min(1).max(65535).nullable().optional(), smtpUser: str(255), smtpPass: secret, fromAddress: str(255), resendApiKey: secret }),
+  ai: z.object({
+    openRouterApiKey: secret, defaultProvider: str(40),
+    models: z.object({ quick: z.string().max(200), standard: z.string().max(200), deep: z.string().max(200), strategic: z.string().max(200) }).partial().nullable().optional(),
+  }),
+  telegram: z.object({ botToken: secret, webhookSecret: secret }),
+  signup: z.object({ autoActivate: z.boolean().nullable().optional(), defaultPlan: z.enum(['starter', 'growth', 'watchtower']).nullable().optional() }),
+} as const;
+type PlatformSection = keyof typeof PLATFORM_SCHEMAS;
+
 // ------------------------------------------------------------------ super admin (8)
 const adminAuthed = pub.use(async ({ context, next }) => next({ context: { adminId: await admin.verifyAdminToken(bearer(context.headers)) } }));
 const adminRoutes = {
@@ -314,6 +349,40 @@ const adminRoutes = {
     .handler(({ input, context }) => admin.setAccountPricing(context.db, context.adminId, input.id, input.monthlyFee)),
   note: adminAuthed.route(r('POST', '/admin/api/accounts/{id}/note')).input(z.object({ id, note: z.string().min(1).max(5000) }))
     .handler(({ input, context }) => admin.addAccountNote(context.db, context.adminId, input.id, input.note)),
+  updateAccount: adminAuthed.route(r('PATCH', '/admin/api/accounts/{id}')).input(z.object({
+    id, businessName: z.string().trim().min(1).max(255).optional(), ownerName: z.string().trim().min(1).max(255).optional(), ownerEmail: z.string().email().optional(),
+    plan: plan.optional(), storageQuotaGb: z.number().min(0.1).max(10_000).optional(), monthlyFee: z.number().min(0).nullable().optional(),
+    notificationEmail: z.string().email().optional(), slaThresholdMinutes: z.number().int().min(1).max(10080).optional(), setupComplete: z.boolean().optional(),
+  })).handler(({ input: { id: aid, ...rest }, context }) => admin.updateAccount(context.db, context.adminId, aid, rest)),
+  platform: adminAuthed.route(r('GET', '/admin/api/platform')).handler(async ({ context }) => ({ sections: await describePlatform(context.db), history: await admin.platformHistory(context.db) })),
+  savePlatform: adminAuthed.route(r('PATCH', '/admin/api/platform/{section}')).input(z.object({ section: z.enum(SECTIONS as [PlatformSection, ...PlatformSection[]]), values: z.record(z.string(), z.unknown()) }))
+    .handler(async ({ input, context }) => {
+      const parsed = PLATFORM_SCHEMAS[input.section].safeParse(input.values);
+      if (!parsed.success) throw fail.bad(parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
+      const values = parsed.data as Record<string, unknown>;
+      const saved = await savePlatformSection(context.db, input.section, values, context.adminId);
+      const changed = Object.keys(values).map((k) => (SECRETS[input.section]?.fields.includes(k) ? `${k} (secret ${values[k] ? 'updated' : 'cleared'})` : k)).join(', ');
+      await admin.logPlatformChange(context.db, context.adminId, `platform_${input.section}`, `Updated ${changed || 'nothing'}`);
+      if (input.section === 'telegram' && values.botToken) {
+        const { registerWebhook } = await import('../services/telegram.js');
+        await registerWebhook(saved.telegram.botToken, 'global');
+      }
+      return { sections: await describePlatform(context.db) };
+    }),
+  testPlatform: adminAuthed.route(r('POST', '/admin/api/platform/test/{target}')).input(z.object({ target: z.enum(['email', 'billing', 'ai', 'telegram']), to: z.string().email().optional() }))
+    .handler(async ({ input, context }) => {
+      const p = await platform(context.db);
+      if (input.target === 'email') return sendTestMail(input.to ?? p.branding.supportEmail);
+      if (input.target === 'billing') return testPolar();
+      if (input.target === 'ai') {
+        if (!p.ai.openRouterApiKey) return { ok: false, error: 'No OpenRouter key set.' };
+        return { ok: await verifyProvider('openrouter', p.ai.models.quick, p.ai.openRouterApiKey) };
+      }
+      if (!p.telegram.botToken) return { ok: false, error: 'No bot token set.' };
+      const { verifyBot } = await import('../lib/telegram.js');
+      const v = await verifyBot(p.telegram.botToken);
+      return v.ok ? { ok: true, botUsername: v.username } : { ok: false, error: 'Telegram rejected the bot token.' };
+    }),
   regenerateRetro: adminAuthed.route(r('POST', '/admin/api/accounts/{id}/campaigns/{campaignId}/retrospective/regenerate')).input(z.object({ id, campaignId: id }))
     .handler(({ input, context }) => admin.regenerateRetrospective(context.db, context.adminId, input.id, input.campaignId)),
   health: adminAuthed.route(r('GET', '/admin/api/health')).handler(async ({ context }) => admin.systemHealth(context.db, await queueDepth())),

@@ -3,13 +3,14 @@
  * not tenant users: they sign in with email + password + TOTP and receive a
  * short-lived admin JWT. They never see lead or deployment content, nor AI keys.
  */
+import { platform } from '../lib/platform.js';
 import { scheduleSuspensionGrace, SUSPENDED_OFFLINE } from '../jobs/scheduler.js';
 import { planForProduct } from '../lib/polar.js';
 import { createHmac } from 'node:crypto';
-import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, isNull, sql } from 'drizzle-orm';
 import { SignJWT, jwtVerify } from 'jose';
 import type { DB } from '../db/client.js';
-import { adminActionLog, aiProviderConfigs, campaignRetrospectives, deployments, leads, superAdmins, tenants, webhookSources } from '../db/schema.js';
+import { adminActionLog, aiProviderConfigs, campaignRetrospectives, deployments, leads, superAdmins, tenants, users, webhookSources } from '../db/schema.js';
 import { checkPassword, hashPassword } from '../lib/auth.js';
 import { config } from '../lib/config.js';
 import { decrypt, encrypt, safeEqual } from '../lib/crypto.js';
@@ -98,6 +99,8 @@ export async function accountDetail(db: DB, id: string) {
   return {
     ...(await listAccounts(db)).find((a) => a.id === id)!, polarCustomerId: t.polarCustomerId, polarSubscriptionId: t.polarSubscriptionId,
     deploymentCount: Number(d.n), leadCount: Number(l.n), aiKeyConfigured: !!ai?.has,
+    storageQuotaGb: Math.round((t.storageQuotaBytes / 1024 ** 3) * 10) / 10, storageUsedMb: Math.round(t.storageUsedBytes / 1024 ** 2),
+    notificationEmail: t.notificationEmail, slaThresholdMinutes: t.slaThresholdMinutes, setupComplete: t.setupComplete,
     history: history.map((h) => ({ action: h.action, note: h.note, createdAt: h.createdAt })),
   };
 }
@@ -131,6 +134,47 @@ export async function setAccountPricing(db: DB, adminId: string, id: string, mon
 export async function addAccountNote(db: DB, adminId: string, id: string, note: string) {
   await logAdmin(db, adminId, 'note', id, note);
   return { ok: true };
+}
+
+/** Super Admin can change any account field that isn't lead/page content. */
+export async function updateAccount(db: DB, adminId: string, id: string, p: {
+  businessName?: string; ownerName?: string; ownerEmail?: string; plan?: 'starter' | 'growth' | 'watchtower' | 'agency';
+  storageQuotaGb?: number; monthlyFee?: number | null; notificationEmail?: string;
+  slaThresholdMinutes?: number; setupComplete?: boolean;
+}) {
+  const [t] = await db.select().from(tenants).where(eq(tenants.id, id));
+  if (!t) throw fail.notFound('Account not found.');
+  const set: Partial<typeof tenants.$inferInsert> = {};
+  const changes: string[] = [];
+  if (p.businessName !== undefined && p.businessName !== t.businessName) { set.businessName = p.businessName.trim(); changes.push(`name → ${set.businessName}`); }
+  if (p.ownerName !== undefined && p.ownerName !== t.ownerName) { set.ownerName = p.ownerName.trim(); changes.push(`owner name → ${set.ownerName}`); }
+  if (p.ownerEmail !== undefined && p.ownerEmail.toLowerCase() !== t.ownerEmail) {
+    const email = p.ownerEmail.toLowerCase();
+    const [dup] = await db.select({ id: tenants.id }).from(tenants).where(eq(tenants.ownerEmail, email));
+    if (dup && dup.id !== id) throw fail.conflict('Another account already uses that owner email.', 'duplicate_email');
+    set.ownerEmail = email; changes.push(`owner email → ${email}`);
+  }
+  if (p.plan !== undefined && p.plan !== t.plan) { set.plan = p.plan; changes.push(`plan ${t.plan} → ${p.plan}`); }
+  if (p.storageQuotaGb !== undefined) { set.storageQuotaBytes = Math.round(p.storageQuotaGb * 1024 ** 3); changes.push(`storage quota → ${p.storageQuotaGb} GB`); }
+  if (p.monthlyFee !== undefined) { set.monthlyFeeOverride = p.monthlyFee == null ? null : p.monthlyFee.toFixed(2); changes.push(p.monthlyFee == null ? 'fee override removed' : `fee → $${p.monthlyFee.toFixed(2)}`); }
+  if (p.notificationEmail !== undefined) { set.notificationEmail = p.notificationEmail; changes.push(`notification email → ${p.notificationEmail}`); }
+  if (p.slaThresholdMinutes !== undefined) { set.slaThresholdMinutes = p.slaThresholdMinutes; changes.push(`SLA threshold → ${p.slaThresholdMinutes} min`); }
+  if (p.setupComplete !== undefined) { set.setupComplete = p.setupComplete; changes.push(`setup complete → ${p.setupComplete}`); }
+  if (!changes.length) return accountDetail(db, id);
+  await db.update(tenants).set(set).where(eq(tenants.id, id));
+  if (set.ownerEmail) await db.update(users).set({ email: set.ownerEmail }).where(and(eq(users.tenantId, id), eq(users.role, 'owner'), eq(users.email, t.ownerEmail)));
+  await logAdmin(db, adminId, 'account_update', id, changes.join('; '));
+  return accountDetail(db, id);
+}
+
+/** Platform-wide change (no target account) — kept in the same audit log. */
+export async function logPlatformChange(db: DB, adminId: string, action: string, note: string) {
+  await db.insert(adminActionLog).values({ adminId, action, targetTenantId: null, note });
+}
+
+export async function platformHistory(db: DB) {
+  const rows = await db.select().from(adminActionLog).where(isNull(adminActionLog.targetTenantId)).orderBy(desc(adminActionLog.createdAt)).limit(50);
+  return rows.map((h) => ({ action: h.action, note: h.note, createdAt: h.createdAt }));
 }
 
 /** D-NEW-14: retrospectives are permanent; only the Super Admin can explicitly regenerate one. */
@@ -175,12 +219,13 @@ export const ingestErrors = {
  * Polar uses Standard Webhooks signing: header `webhook-signature: v1,<base64 hmac>`
  * over `${webhook-id}.${webhook-timestamp}.${body}` with the base64 secret.
  */
-export function verifyPolarSignature(raw: Buffer, headers: Record<string, string | string[] | undefined>): boolean {
-  if (!config.polarWebhookSecret) return false;
+export async function verifyPolarSignature(raw: Buffer, headers: Record<string, string | string[] | undefined>): Promise<boolean> {
+  const webhookSecret = (await platform()).billing.polarWebhookSecret;
+  if (!webhookSecret) return false;
   const id = String(headers['webhook-id'] ?? ''), ts = String(headers['webhook-timestamp'] ?? ''), sig = String(headers['webhook-signature'] ?? '');
   if (!id || !ts || !sig) return false;
   if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
-  const secret = config.polarWebhookSecret.replace(/^(whsec_|polar_whs_)/, '');
+  const secret = webhookSecret.replace(/^(whsec_|polar_whs_)/, '');
   const key = /^[A-Za-z0-9+/=]+$/.test(secret) ? Buffer.from(secret, 'base64') : Buffer.from(secret);
   const expected = createHmac('sha256', key).update(`${id}.${ts}.${raw.toString('utf8')}`).digest('base64');
   return sig.split(' ').some((s) => safeEqual(s.replace(/^v1,/, ''), expected));
@@ -194,7 +239,7 @@ export async function handlePolarEvent(db: DB, evt: { type: string; data: any })
     ? await db.select().from(tenants).where(eq(tenants.id, tenantId))
     : email ? await db.select().from(tenants).where(eq(tenants.ownerEmail, email.toLowerCase())) : [];
   if (!t) return { handled: false };
-  const plan = planForProduct(d.product_id ?? d.product?.id, d.metadata?.plan, d.product?.name ?? d.subscription?.product?.name);
+  const plan = await planForProduct(d.product_id ?? d.product?.id, d.metadata?.plan, d.product?.name ?? d.subscription?.product?.name);
   switch (evt.type) {
     case 'order.created':
     case 'checkout.created':

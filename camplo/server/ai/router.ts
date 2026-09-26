@@ -11,6 +11,7 @@
  * When no provider is available at all, `complete()` returns null and callers
  * fall back to deterministic (Level 0/1) output.
  */
+import { platform, platformSync } from '../lib/platform.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
@@ -112,23 +113,24 @@ async function callTarget(t: Target, r: CompletionRequest) {
   return callOpenAICompatible(t, r, base);
 }
 
-function modelFor(provider: string, configured: string | null, w: Workload): string {
+function modelFor(provider: string, configured: string | null, w: Workload, models: Record<Workload, string>): string {
   if (configured) return configured;
   if (provider === 'anthropic') return ANTHROPIC_TIER_MODEL[w];
-  return config.models[w];
+  return models[w];
 }
 
 /** Resolve the ordered list of targets for a workspace: primary BYOK → fallback BYOK → Camplo. */
 export async function targetsFor(db: DB, tenantId: string, w: Workload): Promise<Target[]> {
   const [cfg] = await db.select().from(aiProviderConfigs).where(eq(aiProviderConfigs.tenantId, tenantId));
+  const ai = (await platform(db)).ai;
   const out: Target[] = [];
   if (cfg?.primaryApiKeyEncrypted && cfg.primaryProvider && cfg.primaryStatus !== 'failed') {
-    out.push({ provider: cfg.primaryProvider, model: modelFor(cfg.primaryProvider, cfg.primaryModelName, w), apiKey: decrypt(cfg.primaryApiKeyEncrypted), byok: true });
+    out.push({ provider: cfg.primaryProvider, model: modelFor(cfg.primaryProvider, cfg.primaryModelName, w, ai.models), apiKey: decrypt(cfg.primaryApiKeyEncrypted), byok: true });
   }
   if (cfg?.fallbackEnabled && cfg.fallbackApiKeyEncrypted && cfg.fallbackProvider) {
-    out.push({ provider: cfg.fallbackProvider, model: modelFor(cfg.fallbackProvider, cfg.fallbackModelName, w), apiKey: decrypt(cfg.fallbackApiKeyEncrypted), byok: true });
+    out.push({ provider: cfg.fallbackProvider, model: modelFor(cfg.fallbackProvider, cfg.fallbackModelName, w, ai.models), apiKey: decrypt(cfg.fallbackApiKeyEncrypted), byok: true });
   }
-  if (config.openRouterApiKey) out.push({ provider: 'openrouter', model: config.models[w], apiKey: config.openRouterApiKey, byok: false });
+  if (ai.openRouterApiKey) out.push({ provider: 'openrouter', model: ai.models[w], apiKey: ai.openRouterApiKey, byok: false });
   return out;
 }
 
@@ -138,7 +140,7 @@ export async function advancedUsage(db: DB, tenantId: string, plan: Plan): Promi
   const [row] = await db.select({ total: sql<string>`coalesce(sum(${aiWorkloadLogs.costUsd}), 0)` }).from(aiWorkloadLogs).where(and(
     eq(aiWorkloadLogs.tenantId, tenantId), eq(aiWorkloadLogs.byok, false),
     inArray(aiWorkloadLogs.workloadLevel, ['deep', 'strategic']), gte(aiWorkloadLogs.createdAt, start)));
-  const budget = DEEP_BUDGET_USD[plan] || 1;
+  const budget = (await platform(db)).pricing.plans[plan].deepBudgetUsd || 1;
   return Number(row?.total ?? 0) / budget;
 }
 
@@ -180,7 +182,7 @@ export async function complete(db: DB, r: CompletionRequest): Promise<CompleteRe
 /** Verify a key with a minimal call (Settings → AI Provider → Verify). */
 export async function verifyProvider(provider: string, model: string | null, apiKey: string): Promise<boolean> {
   try {
-    const res = await callTarget({ provider, model: modelFor(provider, model, 'quick'), apiKey, byok: true }, {
+    const res = await callTarget({ provider, model: modelFor(provider, model, 'quick', platformSync().ai.models), apiKey, byok: true }, {
       tenantId: '', plan: 'starter', workload: 'quick', taskType: 'chat', system: 'Reply with OK.', messages: [{ role: 'user', content: 'ping' }], maxTokens: 16,
     });
     return typeof res.text === 'string';

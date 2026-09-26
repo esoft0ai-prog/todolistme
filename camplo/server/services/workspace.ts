@@ -1,4 +1,5 @@
 /** Workspace, team management (TM1–TM4), notifications, workspace log and global search. */
+import { planLimits, planPrice, platform } from '../lib/platform.js';
 import { createCheckout } from '../lib/polar.js';
 import { and, desc, eq, gte, ilike, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { campaignMembers, campaigns, deployments, leads, notifications, tenants, users, workspaceLogs } from '../db/schema.js';
@@ -19,12 +20,12 @@ export async function getWorkspace(ctx: AuthedContext) {
     .where(and(eq(notifications.tenantId, ctx.tenantId), isNull(notifications.readAt), or(isNull(notifications.userId), eq(notifications.userId, ctx.user.id))));
   return {
     ...publicTenant(ctx.tenant), avgConversionRate: await workspaceConversion(ctx.db, ctx.tenantId),
-    notifications: { unreadCount: Number(unread.n) }, limits: limitsFor(ctx.plan), price: PLAN_PRICE[ctx.plan],
+    notifications: { unreadCount: Number(unread.n) }, limits: await limitsFor(ctx), price: await planPrice(ctx.plan, ctx.db),
     me: publicUser(ctx.user),
   };
 }
 
-const limitsFor = (p: Plan) => Object.fromEntries(Object.entries(PLAN_LIMITS[p]).map(([k, v]) => [k, Number.isFinite(v) ? v : null]));
+const limitsFor = async (ctx: AuthedContext) => Object.fromEntries(Object.entries(await planLimits(ctx.plan, ctx.db)).map(([k, v]) => [k, Number.isFinite(v) ? v : null]));
 
 export async function patchWorkspace(ctx: AuthedContext, patch: {
   name?: string; teamSize?: string; hasMarketingStack?: boolean; stackCheckCompleted?: boolean; setupComplete?: boolean; notificationEmail?: string;
@@ -46,7 +47,7 @@ export async function patchWorkspace(ctx: AuthedContext, patch: {
 export async function planInfo(ctx: AuthedContext) {
   const usage = await advancedUsage(ctx.db, ctx.tenantId, ctx.plan);
   return {
-    plan: ctx.plan, price: PLAN_PRICE[ctx.plan], limits: limitsFor(ctx.plan),
+    plan: ctx.plan, price: await planPrice(ctx.plan, ctx.db), limits: await limitsFor(ctx),
     aiUsage: { deepPercent: Math.round(Math.min(1, usage) * 100), warning: usage >= 0.8 && usage < 1, limitReached: usage >= 1 },
   };
 }
@@ -93,7 +94,7 @@ export async function upgrade(ctx: AuthedContext, targetPlan: Plan) {
   assertRole(ctx, 'owner');
   const checkoutUrl = await createCheckout({ plan: targetPlan, email: ctx.tenant.ownerEmail, tenantId: ctx.tenantId });
   if (checkoutUrl) return { checkoutUrl, applied: false };
-  if (process.env.ALLOW_DIRECT_PLAN_CHANGE === 'true') {
+  if ((await platform(ctx.db)).billing.allowDirectPlanChange) {
     await ctx.db.update(tenants).set({ plan: targetPlan }).where(eq(tenants.id, ctx.tenantId));
     await logWorkspace(ctx.db, ctx.tenantId, ctx.user.id, `Plan changed to ${targetPlan}`);
     return { checkoutUrl: null, applied: true };
@@ -208,7 +209,8 @@ export async function invite(ctx: AuthedContext, email: string, role: 'admin' | 
     throw fail.conflict(existing.joinedAt ? 'This person is already a member.' : 'An invitation has already been sent to this address.', existing.joinedAt ? 'already_member' : 'pending_invite');
   }
   const [{ n }] = await ctx.db.select({ n: sql<number>`count(*)` }).from(users).where(and(eq(users.tenantId, ctx.tenantId), isNull(users.removedAt)));
-  if (Number(n) >= PLAN_LIMITS[ctx.plan].members) throw fail.planLimit(`Your plan includes ${PLAN_LIMITS[ctx.plan].members} team members. Upgrade to invite more.`, 'growth');
+  const lim = await planLimits(ctx.plan, ctx.db);
+  if (Number(n) >= lim.members) throw fail.planLimit(`Your plan includes ${lim.members} team members. Upgrade to invite more.`, 'growth');
   let u: typeof users.$inferSelect;
   if (existing) {
     [u] = await ctx.db.update(users).set({ removedAt: null, joinedAt: null, role, invitedBy: ctx.user.id, createdAt: new Date() }).where(eq(users.id, existing.id)).returning();

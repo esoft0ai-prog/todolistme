@@ -532,7 +532,7 @@ export const adminActionLog = pgTable('admin_action_log', {
   id: id(),
   adminId: varchar('admin_id', { length: 255 }).notNull(),
   action: varchar('action', { length: 100 }).notNull(),
-  targetTenantId: uuid('target_tenant_id').notNull(),
+  targetTenantId: uuid('target_tenant_id'), // null = platform-wide change (Super Admin settings)
   note: text('note'),
   createdAt: ts('created_at').notNull().defaultNow(),
 });
@@ -645,3 +645,14 @@ export const superAdmins = pgTable('super_admins', {
   totpSecretEncrypted: text('totp_secret_encrypted'),
   createdAt: ts('created_at').notNull().defaultNow(),
 }, (t) => [uniqueIndex('idx_super_admins_email').on(t.email)]);
+
+/**
+ * Proposed: Super Admin platform settings (branding, pricing & limits, payments, email, AI, Telegram, signup).
+ * One row per section; values override the environment. Secret fields are stored encrypted.
+ */
+export const platformSettings = pgTable('platform_settings', {
+  section: varchar('section', { length: 40 }).primaryKey(),
+  value: jsonb('value').$type<Record<string, unknown>>().notNull().default({}),
+  updatedBy: varchar('updated_by', { length: 255 }),
+  updatedAt: ts('updated_at').notNull().defaultNow(),
+});

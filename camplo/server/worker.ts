@@ -6,6 +6,7 @@ import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { getDatabase } from './db/client.js';
 import { config } from './lib/config.js';
+import { bindPlatformDb } from './lib/platform.js';
 import { bindDatabase, QUEUES, runJob, runSweeps, type JobName } from './jobs/scheduler.js';
 
 if (!config.redisUrl) {
@@ -15,6 +16,7 @@ if (!config.redisUrl) {
 
 const { db } = await getDatabase();
 bindDatabase(db);
+bindPlatformDb(db);
 const connection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
 
 /** Heavy or rate-limited queues run with low concurrency; notification/timer queues fan out. */

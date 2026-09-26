@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
+import { planLimits, platform } from '../lib/platform.js';
 import { randomUUID } from 'node:crypto';
 import PDFDocument from 'pdfkit';
 import type { DB } from '../db/client.js';
@@ -63,8 +64,9 @@ export async function createCampaign(ctx: AuthedContext, input: {
   assertRole(ctx, 'owner', 'admin');
   const [{ n }] = await ctx.db.select({ n: sql<number>`count(*)` }).from(campaigns)
     .where(and(eq(campaigns.tenantId, ctx.tenantId), sql`${campaigns.status} <> 'complete'`));
-  if (Number(n) >= PLAN_LIMITS[ctx.plan].campaigns) {
-    throw fail.planLimit(`Your plan includes ${PLAN_LIMITS[ctx.plan].campaigns} active campaigns. Upgrade to add more.`, ctx.plan === 'starter' ? 'growth' : 'watchtower');
+  const lim = await planLimits(ctx.plan, ctx.db);
+  if (Number(n) >= lim.campaigns) {
+    throw fail.planLimit(`Your plan includes ${lim.campaigns} active campaigns. Upgrade to add more.`, ctx.plan === 'starter' ? 'growth' : 'watchtower');
   }
   const [c] = await ctx.db.insert(campaigns).values({
     tenantId: ctx.tenantId, name: input.name.trim(), description: input.description ?? null, ownerId: ctx.user.id,
@@ -348,7 +350,7 @@ async function renderRetroPdf(db: DB, t: typeof tenants.$inferSelect, r: RetroVi
   if (r.worstPage) doc.text(`Weakest page: ${r.worstPage.name}${r.worstPage.conversionRate != null ? ` · ${(r.worstPage.conversionRate * 100).toFixed(1)}% conversion` : ''}`);
   doc.moveDown(1.5).fillColor('#55557A').fontSize(8).text('AI OBSERVATION');
   doc.moveDown(0.5).fillColor('#E8E8F0').font('Helvetica-Oblique').fontSize(12).text(r.aiObservation ?? '', { lineGap: 4 });
-  doc.fillColor('#55557A').font('Helvetica').fontSize(8).text('Powered by Camplo', 56, doc.page.height - 72, { align: 'center', width: doc.page.width - 112 });
+  doc.fillColor('#55557A').font('Helvetica').fontSize(8).text(`Powered by ${(await platform(db)).branding.productName}`, 56, doc.page.height - 72, { align: 'center', width: doc.page.width - 112 });
   doc.end();
   await done;
   return Buffer.concat(chunks);
@@ -397,7 +399,7 @@ export async function publicCampaign(db: DB, token: string) {
     campaign_name: c.name, status: c.status, lead_count: s.leadCount, responded_count: s.respondedCount, not_responded_count: s.notRespondedCount,
     speed_to_lead_ms: s.avgResponseMs, health_pulse: health(s).status,
     insights: orderInsights(ins).slice(0, 5).map((i) => ({ observation: redact(i.observation), generated_at: i.generatedAt })),
-    powered_by: 'Camplo',
+    powered_by: (await platform(db)).branding.productName,
   };
 }
 

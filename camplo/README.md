@@ -85,8 +85,18 @@ ADL §5 names are primary; the older names in brackets still work.
 
 ## Super Admin console
 
-`/admin` is a separate sign-in (ADL D-33): email + password + a 6-digit TOTP code from an authenticator app. It lists
-accounts (activate / suspend / flag, fee override, internal notes, history) and platform health — aggregate counts only.
+`/admin` is a separate sign-in (ADL D-33): email + password + a 6-digit TOTP code from an authenticator app.
+
+- **Accounts** — activate / suspend / flag; edit business and owner details, plan, fee override, storage quota,
+  notification email and SLA threshold; internal notes; per-account history. Aggregate counts only, never lead or page content.
+- **Platform settings** (`platform_settings` table, values override env vars; blank = back to the env default):
+  branding (product name used across the app, emails, share pages and PDFs; support email; sender name),
+  pricing & limits (price, campaigns, deployments, members, connected tools and AI budget per plan; extra-deployment
+  add-on; currency), payments (Polar token, webhook secret, organization, product IDs, checkout links, pay-free plan
+  changes), email (SMTP / Resend), AI (OpenRouter key and model per tier), Telegram (platform bot) and signup
+  (auto-activate, default plan). Secrets are encrypted, never sent back (masked only) and can be cleared. Each section
+  has a connection test where it applies.
+- **Audit log** — every platform change (secret values never logged).
 The first Super Admin is created from `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD` and `ADMIN_TOTP_SECRET` (base32) on the
 first login attempt; once a database is attached, changing those variables does not change an existing admin.
 
@@ -120,8 +130,9 @@ Known limits on Vercel without extra services:
 Columns: `tenants.team_size / suspended_at / notification_prefs`, `users.notify_enabled / notify_channel / removed_at`,
 `deployments.serving_state / vip / failure_reason`, `leads.sla_alert_sent_at`, `notes.title / meeting_date / via`,
 `insights.category / dedupe_key`, `inbound_webhooks.campaign_id`, `ai_provider_configs.last_refresh_at`.
-Tables: `sessions` (rotating refresh tokens), `one_time_tokens` (reset/invite/ack links), `notifications`,
-`workspace_logs`, `page_visits`, `stored_files`, `super_admins`.
+Tables: `sessions` (rotating refresh tokens), `one_time_tokens` (reset/invite/ack/magic-login links), `notifications`,
+`workspace_logs`, `page_visits`, `stored_files`, `super_admins`, `platform_settings` (migration 0001; also makes
+`admin_action_log.target_tenant_id` nullable for platform-wide entries).
 
 ## ADL delta — how each decision landed
 

@@ -1,4 +1,5 @@
 /** Integrations, webhooks, AI provider, Telegram and notification settings (Screen 20). */
+import { planLimits, platform } from '../lib/platform.js';
 import { and, eq, sql } from 'drizzle-orm';
 import { aiProviderConfigs, inboundWebhooks, integrations, outboundWebhooks, telegramConnections, tenants } from '../db/schema.js';
 import { fail, assertRole, type AuthedContext } from '../lib/orpc.js';
@@ -64,7 +65,7 @@ export async function connectIntegration(ctx: AuthedContext, provider: Provider,
     if (toolCats.includes(cat.category)) {
       const [{ n }] = await ctx.db.select({ n: sql<number>`count(*)` }).from(integrations)
         .where(and(eq(integrations.tenantId, ctx.tenantId), eq(integrations.status, 'connected'), sql`${integrations.provider} in ('twenty_crm','gohighlevel','hubspot','salesforce','activecampaign','mailchimp','brevo','notifuse','meta_ads','google_ads','slack','umami')`));
-      if (Number(n) >= PLAN_LIMITS[ctx.plan].connectedTools) {
+      if (Number(n) >= (await planLimits(ctx.plan, ctx.db)).connectedTools) {
         throw fail.planLimit(ctx.plan === 'starter' ? 'Connected tools are available on Growth.' : 'Growth includes one connected tool. Upgrade to Watchtower for unlimited tools.', ctx.plan === 'starter' ? 'growth' : 'watchtower');
       }
     }
@@ -174,7 +175,7 @@ export async function getAiProvider(ctx: AuthedContext) {
     primary: { provider: r.primaryProvider, modelName: r.primaryModelName, apiKeyMasked: r.primaryApiKeyEncrypted ? mask(decrypt(r.primaryApiKeyEncrypted)) : null, status: r.primaryStatus },
     fallback: { enabled: r.fallbackEnabled, provider: r.fallbackProvider, modelName: r.fallbackModelName, apiKeyMasked: r.fallbackApiKeyEncrypted ? mask(decrypt(r.fallbackApiKeyEncrypted)) : null, status: r.fallbackStatus },
     usingFallback: r.usingFallback, refreshIntervalMinutes: r.refreshIntervalMinutes, eventTriggers: r.eventTriggers,
-    camploProvidedAi: !!config.openRouterApiKey, advancedUsage: Math.min(1, usage),
+    camploProvidedAi: !!(await platform(ctx.db)).ai.openRouterApiKey, advancedUsage: Math.min(1, usage),
   };
 }
 
@@ -223,9 +224,10 @@ export async function getTelegram(ctx: AuthedContext) {
   assertRole(ctx, 'owner');
   const [t] = await ctx.db.select().from(telegramConnections).where(eq(telegramConnections.tenantId, ctx.tenantId));
   const linkCode = ctx.user.id.replace(/-/g, '');
+  const camploBot = (await platform(ctx.db)).telegram.botToken;
   return t
     ? { connected: t.verified, botUsername: t.botUsername, tokenMasked: mask(decrypt(t.botTokenEncrypted)), criticalAlertsEnabled: t.criticalAlertsEnabled, dailyDigestEnabled: t.dailyDigestEnabled, camploBot: false, linkCode }
-    : { connected: !!config.telegramBotToken, botUsername: null, tokenMasked: null, criticalAlertsEnabled: true, dailyDigestEnabled: false, camploBot: !!config.telegramBotToken, linkCode };
+    : { connected: !!camploBot, botUsername: null, tokenMasked: null, criticalAlertsEnabled: true, dailyDigestEnabled: false, camploBot: !!camploBot, linkCode };
 }
 
 export async function verifyTelegram(ctx: AuthedContext, botToken: string) {

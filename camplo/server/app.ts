@@ -4,6 +4,7 @@
  * plain Express routes. Hosted landing pages are served from /sites/:subdomain
  * or by Host header ({sub}.PAGES_BASE_DOMAIN / verified custom domains).
  */
+import { bindPlatformDb, platform, publicPlatform } from './lib/platform.js';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
@@ -81,7 +82,7 @@ export function createApp() {
   });
 
   // Bind the DB for inline jobs and run the piggy-back scheduler.
-  app.use(async (req, _res, next) => { try { const { db } = await getDatabase(); bindDatabase(db); maybeSweep(db); next(); } catch (e) { next(e); } });
+  app.use(async (req, _res, next) => { try { const { db } = await getDatabase(); bindDatabase(db); bindPlatformDb(db); maybeSweep(db); next(); } catch (e) { next(e); } });
 
   // ---------------------------------------------------------------- hosted pages by Host header
   app.use(async (req, res, next) => {
@@ -138,7 +139,7 @@ export function createApp() {
     res.status(r.status).json({ ok: r.status < 300 });
   }));
   app.post('/api/polar/webhook', raw, wrap(async (req, res, db) => {
-    if (!verifyPolarSignature(req.body as Buffer, req.headers)) { res.status(401).json({ ok: false }); return; }
+    if (!(await verifyPolarSignature(req.body as Buffer, req.headers))) { res.status(401).json({ ok: false }); return; }
     const r = await handlePolarEvent(db, JSON.parse((req.body as Buffer).toString('utf8')));
     res.json(r);
   }));
@@ -148,7 +149,7 @@ export function createApp() {
   const telegramHook = (scopeOf: (req: Req) => string) => wrap(async (req, res, db) => {
     const scope = scopeOf(req);
     const got = req.header('x-telegram-bot-api-secret-token') ?? '';
-    if (!safeEqual(got, webhookSecretFor(scope))) { res.status(401).json({ ok: false }); return; }
+    if (!safeEqual(got, await webhookSecretFor(scope))) { res.status(401).json({ ok: false }); return; }
     await handleUpdate(db, scope, req.body);
     res.json({ ok: true });
   });
@@ -232,7 +233,7 @@ export function createApp() {
   app.get('/api/health', wrap(async (_req, res, db) => {
     const { kind } = await getDatabase();
     await db.select({ id: tenants.id }).from(tenants).limit(1);
-    res.json({ ok: true, database: kind, ai: !!config.openRouterApiKey, memory: config.hindsightApiUrl ? 'hindsight' : 'relational', queue: config.redisUrl ? 'bullmq' : 'inline' });
+    res.json({ ok: true, database: kind, ai: !!(await platform(db)).ai.openRouterApiKey, memory: config.hindsightApiUrl ? 'hindsight' : 'relational', queue: config.redisUrl ? 'bullmq' : 'inline' });
   }));
 
   // ---------------------------------------------------------------- oRPC JSON API

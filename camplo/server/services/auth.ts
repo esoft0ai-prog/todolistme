@@ -1,4 +1,5 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
+import { platform } from '../lib/platform.js';
 import { createCheckout } from '../lib/polar.js';
 import type { DB } from '../db/client.js';
 import { aiProviderConfigs, oneTimeTokens, sessions, tenants, users } from '../db/schema.js';
@@ -47,7 +48,7 @@ export async function login(ctx: BaseContext, email: string, password: string) {
   }
   attempts.delete(key);
   if (match.tenant.status === 'suspended') {
-    throw fail.forbidden(`Your account has been suspended. Contact support at ${config.supportEmail}.`, 'account_suspended');
+    throw fail.forbidden(`Your account has been suspended. Contact support at ${(await platform(ctx.db)).branding.supportEmail}.`, 'account_suspended');
   }
   const accessToken = await issueSession(ctx, match.user);
   return { accessToken, next: nextRoute(match.tenant), user: publicUser(match.user), tenant: publicTenant(match.tenant) };
@@ -84,7 +85,7 @@ export async function verifyMagicLink(ctx: BaseContext, token: string) {
   const [row] = await ctx.db.select({ user: users, tenant: tenants }).from(users).innerJoin(tenants, eq(tenants.id, users.tenantId))
     .where(and(eq(users.id, t.userId), isNull(users.removedAt)));
   if (!row) throw fail.unauthorized('This sign-in link has expired or was already used. Request a new one.');
-  if (row.tenant.status === 'suspended') throw fail.forbidden(`Your account has been suspended. Contact support at ${config.supportEmail}.`, 'account_suspended');
+  if (row.tenant.status === 'suspended') throw fail.forbidden(`Your account has been suspended. Contact support at ${(await platform(ctx.db)).branding.supportEmail}.`, 'account_suspended');
   const accessToken = await issueSession(ctx, row.user);
   return { accessToken, next: nextRoute(row.tenant), user: publicUser(row.user), tenant: publicTenant(row.tenant) };
 }
@@ -113,7 +114,7 @@ export async function signup(ctx: BaseContext, input: { name: string; email: str
   const email = input.email.toLowerCase();
   const [exists] = await ctx.db.select({ id: tenants.id }).from(tenants).where(eq(tenants.ownerEmail, email));
   if (exists) throw fail.conflict('An account with this email already exists.', 'duplicate_email');
-  const autoActivate = process.env.AUTO_ACTIVATE === 'true';
+  const autoActivate = (await platform(ctx.db)).signup.autoActivate;
   const tenant = await ctx.db.transaction(async (tx) => {
     const [t] = await tx.insert(tenants).values({
       businessName: input.workspaceName, ownerName: input.name, ownerEmail: email, notificationEmail: email, plan: input.plan,

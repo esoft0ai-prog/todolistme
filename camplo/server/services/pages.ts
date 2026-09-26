@@ -4,6 +4,7 @@
  * or a verified custom domain). Static files only — nothing on a hosted page
  * ever executes server-side.
  */
+import { planLimits, platform } from '../lib/platform.js';
 import { enqueue, scheduleEarlyWarningClose, usesQueues } from '../jobs/scheduler.js';
 import AdmZip from 'adm-zip';
 import { resolveCname } from 'node:dns/promises';
@@ -154,7 +155,11 @@ export async function uploadPage(ctx: AuthedContext, input: { file: File; name?:
   if (!/\.zip$/i.test(input.file.name)) throw fail.unprocessable('Only .zip files can be uploaded.');
   if (input.file.size > config.maxZipSizeMb * 1024 * 1024) throw fail.tooLarge(`File exceeds ${config.maxZipSizeMb}MB limit`);
   const [{ n }] = await ctx.db.select({ n: sql<number>`count(*)` }).from(deployments).where(and(eq(deployments.tenantId, ctx.tenantId), sql`${deployments.status} <> 'deleted'`));
-  if (Number(n) >= PLAN_LIMITS[ctx.plan].deployments) throw fail.planLimit(`Your plan includes ${PLAN_LIMITS[ctx.plan].deployments} deployments. Additional deployments are $15/month each.`, 'growth');
+  const lim = await planLimits(ctx.plan, ctx.db);
+  if (Number(n) >= lim.deployments) {
+    const pf = await platform(ctx.db);
+    throw fail.planLimit(`Your plan includes ${lim.deployments} deployments. Additional deployments are ${pf.pricing.currency === 'USD' ? '$' : pf.pricing.currency + ' '}${pf.pricing.addOns.extraDeploymentMonthly}/month each.`, 'growth');
+  }
   if (input.campaignId) await loadCampaign(ctx, input.campaignId);
   const x = extractZip(Buffer.from(await input.file.arrayBuffer()), input.entryFile);
   if ('needsInput' in x) return { status: 'needs_input' as const, entry_points: x.needsInput };

@@ -141,7 +141,7 @@ describe('D-NEW-16 Telegram webhook', () => {
   it('rejects updates without the secret_token header and fits callback data in 64 bytes', async () => {
     expect((await request(app).post('/api/telegram/webhook').send({})).status).toBe(401);
     expect((await request(app).post(`/api/telegram/${tenantId}`).set('x-telegram-bot-api-secret-token', 'wrong').send({})).status).toBe(401);
-    expect((await request(app).post(`/api/telegram/${tenantId}`).set('x-telegram-bot-api-secret-token', webhookSecretFor(tenantId)).send({})).status).toBe(200);
+    expect((await request(app).post(`/api/telegram/${tenantId}`).set('x-telegram-bot-api-secret-token', await webhookSecretFor(tenantId)).send({})).status).toBe(200);
     const data = ackCallbackData('4a3f1e2d-1111-4222-8333-944455556666', '5b3f1e2d-1111-4222-8333-944455556666', tenantId);
     expect(Buffer.byteLength(data)).toBeLessThanOrEqual(64);
   });
