@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Camplo Webhooks Reference</title>
+<meta name="description" content="What to send Camplo (lead and lifecycle webhooks), how requests are verified, and exactly what Camplo sends you for each outbound event." />
+<link rel="stylesheet" href="/docs/docs.css" />
+</head>
+<body>
+<header class="top"><div class="in">
+  <a class="logo" href="/docs/">C<span>.</span> Docs</a>
+  <nav><a href="/docs/">Guide</a><a class="on" href="/docs/webhooks.html">Webhooks &amp; API</a><a href="/">Open Camplo</a></nav>
+</div></header>
+
+<div class="wrap">
+<aside class="toc">
+  <div class="grp">Overview</div>
+  <a href="#overview">How it fits together</a>
+  <div class="grp">Inbound — you send</div>
+  <a href="#leads">Lead webhook</a><a href="#payload">Lead payload</a><a href="#auth">Verifying requests</a><a href="#lifecycle">Lifecycle webhook</a><a href="#pages">Hosted page forms</a><a href="#responses">Responses &amp; errors</a>
+  <div class="grp">Outbound — you receive</div>
+  <a href="#outbound">Setting up</a><a href="#envelope">Request format</a><a href="#events">Events</a><a href="#verify-out">Verifying Camplo</a><a href="#delivery">Delivery rules</a>
+</aside>
+
+<main>
+<h1>Webhooks reference</h1>
+<p class="lead">Camplo has three ways in and one way out. Inbound webhooks bring leads and their follow-up history into Camplo. Outbound webhooks tell your systems the moment something happens.</p>
+
+<h2 id="overview">How it fits together</h2>
+<table><tr><th>Direction</th><th>Endpoint</th><th>Use it for</th><th>Where you get it</th></tr>
+<tr><td><span class="pill g">Inbound</span></td><td><code>POST /api/v1/hooks/{id}</code></td><td>New leads from forms, funnels, cold-outreach replies, Zapier/Make, or your own code</td><td>Settings → Integrations → a lead source → Connect, or Settings → Webhooks &amp; API → Inbound webhooks</td></tr>
+<tr><td><span class="pill g">Inbound</span></td><td><code>POST /api/v1/lifecycle/{integrationId}/{token}</code></td><td>What happened next: CRM stage changes, email enrolments, bookings, wins</td><td>Settings → Integrations → a CRM or email tool</td></tr>
+<tr><td><span class="pill g">Inbound</span></td><td><code>POST /api/v1/ingest/{workspaceId}/{pageId}</code></td><td>Form submissions on pages Camplo hosts — wired automatically</td><td>Nothing to do</td></tr>
+<tr><td><span class="pill b">Outbound</span></td><td>Your URL</td><td>React to <code>lead.received</code>, <code>lead.responded</code>, <code>lead.assigned</code>, <code>sla.breached</code>, <code>campaign.completed</code>, <code>deployment.ready</code></td><td>Settings → Webhooks &amp; API → Outbound webhooks</td></tr></table>
+<p>All URLs are on your Camplo domain, for example <code>https://app.camplo.io/api/v1/hooks/…</code>. Every request and response body is JSON (form-encoded bodies are also accepted inbound).</p>
+
+<h2 id="leads">Lead webhook (inbound)</h2>
+<p>Each lead source gets its own URL, tied to one campaign (or to the Lead Inbox only). Camplo shows it on the integration card under <b>Webhook URLs &amp; settings</b>:</p>
+<pre><code>POST https://app.camplo.io/api/v1/hooks/3f1c…e9a2?token=8d0b…71c4
+Content-Type: application/json</code></pre>
+<p>The <code>token</code> query parameter is the workspace's secret for that webhook. Tools that can sign requests (Tally, Typeform, your own code) should sign instead — see <a href="#auth">Verifying requests</a>. Treat the full URL like a password.</p>
+
+<h2 id="payload">Lead payload</h2>
+<p>Send whatever your tool sends — Camplo recognises common field names, case-sensitive, at the top level or nested under <code>data</code>, <code>contact</code> or <code>payload</code>. Tally's <code>data.fields[]</code> and label-based fields are read automatically.</p>
+<table><tr><th>Camplo field</th><th>Accepted keys (first match wins)</th></tr>
+<tr><td>Name</td><td><code>full_name</code>, <code>fullName</code>, <code>name</code>, <code>your_name</code>, or <code>first_name</code>/<code>firstName</code>/<code>firstname</code> + <code>last_name</code>/<code>lastName</code>/<code>lastname</code></td></tr>
+<tr><td>Email</td><td><code>email</code>, <code>email_address</code>, <code>your_email</code></td></tr>
+<tr><td>Phone</td><td><code>phone</code>, <code>phone_number</code>, <code>phoneNumber</code>, <code>mobile</code></td></tr>
+<tr><td>Source ID (deduplication / CRM matching)</td><td><code>source_identifier</code>, <code>submission_id</code>, <code>submissionId</code>, <code>responseId</code>, <code>contact_id</code>, <code>id</code>, <code>eventId</code></td></tr>
+<tr><td>UTMs (Growth and up)</td><td><code>utm_source</code>, <code>utm_medium</code>, <code>utm_campaign</code>, <code>utm_content</code>, <code>utm_term</code></td></tr>
+<tr><td>Source label</td><td><code>source_system</code>, <code>source</code> (defaults to the integration name)</td></tr></table>
+<p>A lead with no name is stored under its email, or "Unnamed lead". Minimal example:</p>
+<pre><code>{
+  "name": "Ada Obi",
+  "email": "ada@example.com",
+  "phone": "+2348012345678",
+  "submission_id": "sub_81723",
+  "utm_source": "facebook",
+  "utm_campaign": "black-friday"
+}</code></pre>
+
+<h2 id="auth">Verifying requests</h2>
+<p>Camplo accepts a request when <b>any one</b> of these checks passes, using the webhook's signing secret:</p>
+<table><tr><th>Method</th><th>Header / parameter</th><th>Value</th><th>Used by</th></tr>
+<tr><td>Camplo signature</td><td><code>X-Camplo-Signature</code></td><td><code>sha256=</code> + hex HMAC-SHA256 of the raw body (prefix optional)</td><td>Custom code</td></tr>
+<tr><td>Tally signature</td><td><code>Tally-Signature</code></td><td>base64 HMAC-SHA256 of the raw body</td><td>Tally</td></tr>
+<tr><td>Typeform signature</td><td><code>Typeform-Signature</code></td><td><code>sha256=</code> + base64 HMAC-SHA256 of the raw body</td><td>Typeform</td></tr>
+<tr><td>Secret token</td><td><code>?token=</code> or <code>X-Camplo-Token</code></td><td>The signing secret itself</td><td>Tools that can't sign: Systeme.io, GoHighLevel, Instantly, Apollo, Lemlist, Smartlead, Zapier, Make</td></tr></table>
+<h3>Signing in your own code</h3>
+<pre><code># curl
+BODY='{"name":"Ada Obi","email":"ada@example.com"}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$CAMPLO_SECRET" -hex | sed 's/^.* //')
+curl -X POST "https://app.camplo.io/api/v1/hooks/$HOOK_ID" \
+  -H "Content-Type: application/json" -H "X-Camplo-Signature: sha256=$SIG" --data "$BODY"</code></pre>
+<pre><code>// Node.js
+import { createHmac } from 'node:crypto';
+const body = JSON.stringify({ name: 'Ada Obi', email: 'ada@example.com' });
+const sig = createHmac('sha256', process.env.CAMPLO_SECRET).update(body).digest('hex');
+await fetch(`https://app.camplo.io/api/v1/hooks/${hookId}`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Camplo-Signature': `sha256=${sig}` },
+  body,
+});</code></pre>
+<pre><code># Python
+import hmac, hashlib, json, os, requests
+body = json.dumps({"name": "Ada Obi", "email": "ada@example.com"})
+sig = hmac.new(os.environ["CAMPLO_SECRET"].encode(), body.encode(), hashlib.sha256).hexdigest()
+requests.post(f"https://app.camplo.io/api/v1/hooks/{hook_id}", data=body,
+              headers={"Content-Type": "application/json", "X-Camplo-Signature": f"sha256={sig}"})</code></pre>
+<div class="note">Sign the <b>exact bytes</b> you send. Re-serialising JSON after signing (different spacing or key order) breaks the signature.</div>
+
+<h2 id="lifecycle">Lifecycle webhook (inbound)</h2>
+<p>CRMs and email tools post here when something happens to a lead after it arrives. Camplo matches the event to a lead by the external contact ID it has seen before, otherwise by email (most recent lead with that email), and remembers the ID mapping for next time.</p>
+<pre><code>POST https://app.camplo.io/api/v1/lifecycle/{integrationId}/{token}
+Content-Type: application/json
+
+{
+  "event": "Appointment booked",
+  "contact_id": "ghl_8812",
+  "email": "ada@example.com",
+  "occurred_at": "2026-10-02T09:14:00Z"
+}</code></pre>
+<table><tr><th>Field</th><th>Accepted keys</th><th></th></tr>
+<tr><td>Event (required)</td><td><code>event</code>, <code>stage</code>, <code>type</code>, <code>status</code></td><td>Free text. Events containing <i>won, closed, booked</i> or <i>appointment</i> are marked as milestones.</td></tr>
+<tr><td>External contact ID</td><td><code>contact_id</code>, <code>person_id</code>, <code>external_contact_id</code>, <code>id</code></td><td>Recommended</td></tr>
+<tr><td>Email</td><td><code>email</code></td><td>Fallback match</td></tr>
+<tr><td>When</td><td><code>occurred_at</code>, <code>timestamp</code></td><td>ISO 8601; defaults to now</td></tr></table>
+<p>The secret is part of the path, so no signature is needed. Lifecycle events power cross-tool SLA checks (Watchtower) and appear on the lead's timeline.</p>
+
+<h2 id="pages">Hosted page forms</h2>
+<p>Pages uploaded to Camplo post their forms to <code>/api/v1/ingest/{workspaceId}/{pageId}</code>, signed with the page's own secret. Pausing a page hides it from visitors; its form endpoint keeps accepting submissions so nothing sent from an open tab is lost. Camplo injects the form handler for you — you only need it if you build a custom form handler, in which case use the page's webhook secret (page drawer → Webhook) with <code>X-Camplo-Signature</code> exactly as above. The payload format is the same as the lead webhook.</p>
+
+<h2 id="responses">Responses &amp; errors</h2>
+<table><tr><th>Status</th><th>Body</th><th>Meaning</th></tr>
+<tr><td><code>201</code></td><td><code>{"ok":true,"lead_id":"…"}</code></td><td>Lead created (lifecycle: event recorded)</td></tr>
+<tr><td><code>202</code></td><td><code>{"ok":true}</code></td><td>Lifecycle only: accepted, but no matching lead yet</td></tr>
+<tr><td><code>401</code></td><td><code>{"ok":false}</code></td><td>Signature or token didn't match</td></tr>
+<tr><td><code>404</code></td><td><code>{"ok":false}</code></td><td>Unknown webhook, the integration was disconnected, or the hosted page was deleted</td></tr>
+<tr><td><code>410</code></td><td><code>{"ok":false}</code></td><td>Hosted page forms only: the workspace has been suspended for more than 7 days</td></tr>
+<tr><td><code>422</code></td><td><code>{"ok":false}</code></td><td>Lifecycle only: no event field</td></tr></table>
+<p>Bodies up to 1 MB are accepted. Retrying a <code>5xx</code> is safe; include a source ID so you can spot duplicates.</p>
+
+<h2 id="outbound">Outbound webhooks: setting up</h2>
+<p>Settings → Webhooks &amp; API → <b>Add outbound webhook</b>. Choose one event per webhook, enter an HTTPS URL, and (recommended) a secret. Add several webhooks to the same URL to receive several events.</p>
+
+<h2 id="envelope">Request format</h2>
+<pre><code>POST https://your-server.example.com/camplo
+Content-Type: application/json
+X-Camplo-Event: lead.received
+X-Camplo-Signature: sha256=5f2b…   (only when you set a secret)
+
+{
+  "event": "lead.received",
+  "occurred_at": "2026-10-02T09:12:44.512Z",
+  "data": { … event-specific fields … }
+}</code></pre>
+
+<h2 id="events">Events</h2>
+<h3><code>lead.received</code> — a new lead arrived</h3>
+<p>Fires for every lead from any source: hosted pages, lead webhooks, integrations.</p>
+<pre><code>"data": { "lead_id": "6b0e…", "name": "Ada Obi", "email": "ada@example.com", "campaign_id": "a91c…" }</code></pre>
+<p><code>email</code> and <code>campaign_id</code> may be <code>null</code>.</p>
+
+<h3><code>lead.responded</code> — someone responded to a lead</h3>
+<p>Fires when a teammate marks a lead responded (app, email link or Telegram). The SLA clock stops here.</p>
+<pre><code>"data": { "lead_id": "6b0e…", "name": "Ada Obi", "responded_by": "Tunde Bakare", "responded_at": "2026-10-02T09:19:02.000Z", "waited_ms": 378000 }</code></pre>
+
+<h3><code>lead.assigned</code> — the owner assigned a lead</h3>
+<pre><code>"data": { "lead_id": "6b0e…", "assignee": "Tunde Bakare", "path": "B" }</code></pre>
+<p><code>path</code> is <code>"B"</code> for a first assignment and <code>"C"</code> when a claimed lead is reassigned.</p>
+
+<h3><code>sla.breached</code> — a lead passed its response threshold</h3>
+<p>Fires once per lead, when it passes the SLA (or VIP SLA) threshold without a response.</p>
+<pre><code>"data": { "lead_id": "6b0e…", "name": "Ada Obi", "waited_minutes": 31 }</code></pre>
+
+<h3><code>campaign.completed</code> — a campaign was marked complete</h3>
+<pre><code>"data": { "campaign_id": "a91c…", "name": "Black Friday 2026" }</code></pre>
+
+<h3><code>deployment.ready</code> — a hosted page went live</h3>
+<p>Fires after an upload or redeploy finishes and the page is serving.</p>
+<pre><code>"data": { "deployment_id": "d77e…", "name": "bf-vip-early", "url": "https://pages.camplo.io/bf-vip-early" }</code></pre>
+
+<h2 id="verify-out">Verifying that a request came from Camplo</h2>
+<p>Compute HMAC-SHA256 of the raw request body with your secret and compare it (in constant time) with the hex after <code>sha256=</code>.</p>
+<pre><code>// Node.js / Express
+import { createHmac, timingSafeEqual } from 'node:crypto';
+app.post('/camplo', express.raw({ type: 'application/json' }), (req, res) => {
+  const expected = createHmac('sha256', process.env.CAMPLO_SECRET).update(req.body).digest('hex');
+  const got = String(req.header('X-Camplo-Signature') || '').replace(/^sha256=/, '');
+  if (got.length !== expected.length || !timingSafeEqual(Buffer.from(got), Buffer.from(expected))) return res.sendStatus(401);
+  const { event, data } = JSON.parse(req.body.toString('utf8'));
+  // … handle event …
+  res.sendStatus(200);
+});</code></pre>
+<pre><code># Python / Flask
+import hmac, hashlib, os
+from flask import request, abort
+@app.post("/camplo")
+def camplo():
+    expected = hmac.new(os.environ["CAMPLO_SECRET"].encode(), request.get_data(), hashlib.sha256).hexdigest()
+    got = request.headers.get("X-Camplo-Signature", "").removeprefix("sha256=")
+    if not hmac.compare_digest(got, expected): abort(401)
+    payload = request.get_json()
+    return "", 200</code></pre>
+
+<h2 id="delivery">Delivery rules</h2>
+<ul>
+  <li>Camplo waits up to <b>8 seconds</b> for your server. Respond with any <code>2xx</code> quickly and do slow work afterwards.</li>
+  <li>Delivery is attempted <b>once</b>. A timeout or non-2xx response is recorded as a delivery failure (monitored by Camplo) and the webhook's "last sent" time isn't updated.</li>
+  <li>Events can arrive out of order; use <code>occurred_at</code> to order them, and <code>lead_id</code> to make handling idempotent.</li>
+  <li>Disable or delete a webhook any time in Settings → Webhooks &amp; API.</li>
+</ul>
+
+<footer>Need a field that isn't listed? Send it anyway — Camplo stores what it recognises and ignores the rest.</footer>
+</main>
+</div>
+</body>
+</html>

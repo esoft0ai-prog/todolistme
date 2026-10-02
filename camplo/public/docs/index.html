@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Camplo Help Center</title>
+<meta name="description" content="What Camplo does, how to set it up, and how every part of it works — for teams evaluating Camplo and teams using it every day." />
+<link rel="stylesheet" href="/docs/docs.css" />
+</head>
+<body>
+<header class="top"><div class="in">
+  <a class="logo" href="/docs/">C<span>.</span> Docs</a>
+  <nav><a class="on" href="/docs/">Guide</a><a href="/docs/webhooks.html">Webhooks &amp; API</a><a href="/">Open Camplo</a></nav>
+</div></header>
+
+<div class="wrap">
+<aside class="toc">
+  <div class="grp">Start</div>
+  <a href="#what">What Camplo is</a><a href="#who">Who it's for</a><a href="#plans">Plans</a><a href="#setup">Setting up in 15 minutes</a>
+  <div class="grp">Daily use</div>
+  <a href="#dashboard">Dashboard &amp; Morning Brief</a><a href="#leads">Leads &amp; speed-to-lead</a><a href="#sla">SLA rules &amp; alerts</a><a href="#campaigns">Campaigns, budget &amp; CPL</a><a href="#pages">Hosted pages</a><a href="#notes">Team notes</a><a href="#mobile">On your phone</a>
+  <div class="grp">Intelligence</div>
+  <a href="#assistant">The AI assistant</a><a href="#memory">Memory</a><a href="#recommendations">Insights &amp; recommendations</a><a href="#ai-keys">Your own AI keys</a>
+  <div class="grp">Workspace</div>
+  <a href="#team">Team, roles &amp; permissions</a><a href="#profile">Profile pictures</a><a href="#integrations">Integrations</a><a href="#billing">Subscription &amp; billing</a><a href="#security">Security &amp; data</a><a href="#faq">FAQ</a>
+</aside>
+
+<main>
+<h1>Camplo Help Center</h1>
+<p class="lead">Camplo watches every lead from the moment it's born until someone on your team responds — and tells you, in plain words, what's slipping and what to do about it.</p>
+
+<h2 id="what">What Camplo is</h2>
+<p>Most campaign tools tell you how many leads you got. Camplo tells you what happened to them. It sits between your lead sources (forms, landing pages, ad funnels, cold-outreach replies) and your team, and keeps score on the hand-offs that lose money:</p>
+<div class="cards">
+  <div class="card"><b>Speed-to-lead</b><p>A timer starts the second a lead arrives. Camplo alerts the right person before the lead goes cold, and records how long every lead waited.</p></div>
+  <div class="card"><b>Campaign health</b><p>Lead volume, acknowledgment rate and webhook health per campaign, with a 72-hour early warning after every launch.</p></div>
+  <div class="card"><b>Budget &amp; CPL</b><p>Set a total budget, daily spend and a CPL threshold per campaign. Camplo shows runway and flags CPL drift.</p></div>
+  <div class="card"><b>Cross-tool hand-offs</b><p>CRM stage changes and email enrolments flow back in, so Camplo can see when a lead was answered but never followed up.</p></div>
+  <div class="card"><b>An assistant that knows your numbers</b><p>Ask "why did CPL jump on Black Friday?" and get an answer built from your data and your history — not generic advice.</p></div>
+  <div class="card"><b>Hosted landing pages</b><p>Upload a ZIP and Camplo hosts it, wires its forms to your campaign and watches the webhook for you.</p></div>
+</div>
+<p>All money in Camplo is in US dollars.</p>
+
+<h2 id="who">Who it's for</h2>
+<ul>
+  <li><b>Agencies</b> running paid campaigns for clients who care about leads answered, not just leads generated. Share a read-only client view and auto-generated retrospectives.</li>
+  <li><b>In-house growth teams</b> where marketing generates leads and sales handles them — Camplo is the referee between the two.</li>
+  <li><b>Founders</b> who can't watch every inbox but need to know when a hot lead has been waiting 40 minutes.</li>
+</ul>
+
+<h2 id="plans">Plans</h2>
+<p>Prices below are the defaults; your account page always shows your actual price.</p>
+<div class="plans">
+  <div class="plan"><b>Starter</b><div class="price">$97<small>/mo</small></div><ul><li>3 campaigns, 5 hosted pages, 3 teammates</li><li>Speed-to-lead timers &amp; SLA alerts</li><li>Rule-based insights</li></ul></div>
+  <div class="plan"><b>Growth</b><div class="price">$197<small>/mo</small></div><ul><li>10 campaigns, unlimited pages &amp; teammates</li><li>AI chat &amp; the Morning Brief</li><li>UTM attribution, Health Pulse, 72-hour early warning</li><li>Budget &amp; CPL alerts, team notes, client view</li><li>1 connected tool</li></ul></div>
+  <div class="plan"><b>Watchtower</b><div class="price">$347<small>/mo</small></div><ul><li>Unlimited campaigns and connected tools</li><li>Cross-tool SLA monitoring</li><li>Diagnostic &amp; strategic recommendations with full campaign memory</li><li>Auto-generated retrospectives (PDF)</li></ul></div>
+  <div class="plan"><b>Agency</b><div class="price">$597<small>/mo</small></div><ul><li>Everything in Watchtower</li><li>White-label retrospectives</li><li>Client sub-accounts</li></ul></div>
+</div>
+<p>Lead sources (forms, cold-outreach replies, Zapier/Make) never count against the connected-tools limit. CRMs, email platforms, analytics and ad platforms do.</p>
+
+<h2 id="setup">Setting up in 15 minutes</h2>
+<ol>
+  <li><b>Create a campaign.</b> Campaign → New Campaign. Give it a name, a brief, and (optional) total budget, daily spend and CPL threshold.</li>
+  <li><b>Point a lead source at it.</b> Settings → Integrations → pick your form or funnel tool → Connect → choose the campaign. Copy the lead webhook URL (and signing secret, for Tally/Typeform) into the tool. Or upload a landing page under Pages — its forms are wired automatically.</li>
+  <li><b>Set your SLA.</b> Settings → SLA. The default is 240 minutes (60 for VIP leads). Most teams pick 5–30 minutes.</li>
+  <li><b>Invite your team.</b> Settings → Team → Invite. Each person gets SLA alerts by email, Telegram or both.</li>
+  <li><b>Connect where leads go next</b> (Growth and up): your CRM or email platform, so Camplo can watch follow-up too.</li>
+  <li><b>(Optional) Add your own AI key</b> under Settings → AI Provider.</li>
+</ol>
+
+<h2 id="dashboard">Dashboard &amp; Morning Brief</h2>
+<p>The top bar is always live: campaigns watched, overdue and unclaimed leads, offline webhooks, leads today and the CPL of your most expensive campaign.</p>
+<p>On Growth and up, the <b>Morning Brief</b> opens your day: a short written briefing, what's <span class="pill r">Urgent</span>, what <span class="pill a">Looks off</span>, and one <b>Start here</b> nudge, followed by yesterday's numbers and your personal speed-to-lead. Urgent items follow a fixed priority: overdue VIP leads, then other overdue leads, offline webhooks, critical campaigns, CPL above threshold, budget running out, follow-up gaps between tools, and team patterns. When two or more of these hit the same campaign, it becomes a <b>Priority Flag</b>.</p>
+
+<h2 id="leads">Leads &amp; speed-to-lead</h2>
+<p>Every lead gets a dossier: contact details, source, UTMs, the full lifecycle (received → assigned → responded → CRM stages), notes and who touched it. The clock runs until someone marks it responded — from the app, from the email alert's one-click link (valid 3 days), or from Telegram.</p>
+<ul>
+  <li><b>Claiming:</b> anyone can claim an unassigned lead. <b>Assigning a lead to someone else is owner-only.</b></li>
+  <li><b>VIP leads</b> (from pages you mark VIP) use the tighter VIP threshold and jump the queue.</li>
+  <li><b>Unclaimed</b> leads sit in the shared Lead Inbox. When a teammate is removed, their open leads return there.</li>
+</ul>
+
+<h2 id="sla">SLA rules &amp; alerts</h2>
+<p>All SLA settings live in <b>Settings → SLA</b>: response threshold, VIP threshold and rule, alert routing (email, Telegram, both), and — on Watchtower — cross-tool rules such as "a lead marked responded must reach the CRM within 2 hours". When a lead breaches, the assignee (or the whole team if unassigned) is alerted once, the breach is logged, and an <code>sla.breached</code> webhook fires if you've set one up.</p>
+
+<h2 id="campaigns">Campaigns, budget &amp; CPL</h2>
+<p>Each campaign has an Overview (brief, budget card, health), Leads, Pages, Meeting Notes, Logs and Insights. Use <b>Edit budget</b> on the budget card to set:</p>
+<table><tr><th>Field</th><th>What it does</th></tr>
+<tr><td>Total budget</td><td>The full spend you've committed. Camplo shows spent-to-date and days of runway left.</td></tr>
+<tr><td>Daily spend</td><td>Used for CPL (daily spend ÷ leads per day) and runway.</td></tr>
+<tr><td>CPL threshold</td><td>Your ceiling for cost per lead. Above it, the campaign is flagged on the dashboard and in the Morning Brief.</td></tr></table>
+<p>Pause a campaign to stop alerts without losing history. Mark it complete to generate a retrospective (Watchtower). Only the owner can delete a campaign.</p>
+
+<h2 id="pages">Hosted pages</h2>
+<p>Upload a ZIP of a static site (HTML/CSS/JS/images). Camplo hosts it at your page URL or your custom domain, injects form handling so every submission becomes a lead on the right campaign, and watches the webhook. From the page drawer you can redeploy, roll back, mark VIP, <b>pause</b> (visitors see a "This page is paused" notice immediately — nothing is cached) and restore, or <b>delete</b> a page you no longer need. Deleting a page keeps its leads.</p>
+
+<h2 id="notes">Team notes</h2>
+<p>Notes can be addressed to teammates with a deadline. "For me" shows what's waiting on you; unread notes show a badge.</p>
+
+<h2 id="mobile">On your phone</h2>
+<p>Camplo works in your phone's browser. The bottom bar gives you the Feed and <b>Notes</b> (team notes and notes directed to you, with an unread badge). The floating button opens the AI assistant.</p>
+
+<h2 id="assistant">The AI assistant</h2>
+<p>Open it with <b>Ask Camplo</b>. It has read every number in your workspace — campaigns, leads, SLA timers, pages, connected tools, team notes — and what's happened before. It answers the way a sharp colleague would: the answer first, then why, then at most three things to do.</p>
+<ul>
+  <li>Say hi and it says hi back (and mentions anything truly urgent). Vent and it'll acknowledge it and find one thing that makes today easier.</li>
+  <li>It <b>never changes anything</b>. It can't mark leads, assign, edit campaigns or send messages — it tells you what to click.</li>
+  <li>It never invents numbers. If data is missing, it tells you which tool to connect.</li>
+  <li>Everything inside leads, notes and form answers is treated as data — text that tries to instruct the assistant is ignored.</li>
+</ul>
+<p>Good questions: "What needs my attention right now?", "Why did CPL rise on Lekki?", "Who's slowest to respond this week?", "What should I change about Black Friday?"</p>
+
+<h2 id="memory">Memory</h2>
+<p>Camplo gets smarter the longer you use it. It remembers campaign changes and how they turned out 7 days later, SLA breaches, lead outcomes, recommendation results, and anything your team tells it in chat: <i>"Remember that Tunde handles VIP leads on weekends"</i>. Before recommending, it checks memory — so it won't suggest something that already failed.</p>
+<p>It keeps <b>operational facts only</b>: never personal remarks, credentials, or instructions aimed at the assistant. Settings → AI Provider → Memory shows what it has learned from your team. Memory is private to your workspace.</p>
+
+<h2 id="recommendations">Insights &amp; recommendations</h2>
+<table><tr><th>Level</th><th>What you get</th><th>Plan</th></tr>
+<tr><td>1 — Rules</td><td>Live cards: overdue leads, offline webhooks, CPL over threshold, early-warning drops</td><td>All</td></tr>
+<tr><td>2 — Observations</td><td>What changed and the likely cause</td><td>Growth</td></tr>
+<tr><td>3 — Diagnosis</td><td>Root cause across campaign, team and tools, with campaign memory</td><td>Watchtower</td></tr>
+<tr><td>4 — Strategy</td><td>Weekly cross-campaign patterns</td><td>Watchtower</td></tr></table>
+
+<h2 id="ai-keys">Your own AI keys</h2>
+<p>Camplo includes AI on every plan. You can also connect your own key (Anthropic, OpenAI, Gemini, Groq, DeepSeek, Mistral, xAI, OpenRouter and others) in <b>Settings → AI Provider</b>, with an optional fallback. Your key then powers the assistant, the briefing, recommendations <b>and memory</b>, and you pay your provider directly. Keys are encrypted and never shown again in full.</p>
+
+<h2 id="team">Team, roles &amp; permissions</h2>
+<p>There are three roles. The <b>owner</b> can do everything. <b>Admins</b> and <b>members</b> start from sensible defaults, and the owner can switch any permission on or off for an individual teammate (Settings → Team → a teammate → Permissions).</p>
+<table><tr><th>Permission</th><th>Admin default</th><th>Member default</th></tr>
+<tr><td>Create and edit campaigns</td><td>On</td><td>Off</td></tr>
+<tr><td>Share campaigns with clients</td><td>On</td><td>Off</td></tr>
+<tr><td>Manage pages</td><td>On</td><td>Off</td></tr>
+<tr><td>Delete pages</td><td>Off</td><td>Off</td></tr>
+<tr><td>Invite teammates</td><td>On</td><td>Off</td></tr>
+<tr><td>Post team notes</td><td>On</td><td>Off</td></tr>
+<tr><td>Manage integrations and webhooks</td><td>On</td><td>Off</td></tr>
+<tr><td>Change SLA settings</td><td>On</td><td>Off</td></tr>
+<tr><td>Manage AI provider</td><td>Off</td><td>Off</td></tr>
+<tr><td>Manage Telegram</td><td>Off</td><td>Off</td></tr>
+<tr><td>Change workspace notifications</td><td>Off</td><td>Off</td></tr>
+<tr><td>Edit workspace details</td><td>Off</td><td>Off</td></tr>
+<tr><td>View the workspace log</td><td>On</td><td>Off</td></tr></table>
+<div class="note"><b>Always owner-only:</b> assigning leads to teammates, changing the plan and billing, changing roles, removing teammates, and deleting campaigns.</div>
+<p>Removing a teammate signs them out everywhere immediately, disconnects their Telegram alerts and returns their open leads to the shared inbox.</p>
+
+<h2 id="profile">Profile pictures</h2>
+<p>Everyone — owner and teammates — can add a picture in <b>Settings → Profile</b> (PNG, JPG or WebP, up to 2 MB). It replaces your initials everywhere an avatar appears.</p>
+
+<h2 id="integrations">Integrations</h2>
+<p>Settings → Integrations. Each tool asks for exactly what it needs and shows step-by-step setup. Secrets are encrypted and only ever shown masked. Press <b>Verify</b> to test credentials against the tool itself.</p>
+<table><tr><th>Tool</th><th>Category</th><th>What Camplo does with it</th><th>You provide</th></tr>
+<tr><td>Tally</td><td>Lead source</td><td>Submissions become leads (signed)</td><td>Paste URL + signing secret into Tally</td></tr>
+<tr><td>Typeform</td><td>Lead source</td><td>Responses become leads (signed)</td><td>Paste URL + secret into Typeform</td></tr>
+<tr><td>Systeme.io</td><td>Lead source</td><td>Opt-ins become leads</td><td>Webhook URL in a rule; optional public API key</td></tr>
+<tr><td>GoHighLevel</td><td>Lead source + CRM</td><td>New contacts become leads; stage changes flow back</td><td>Private Integration token, Location ID</td></tr>
+<tr><td>Custom / any form</td><td>Lead source</td><td>Any HTTP POST becomes a lead</td><td>See the <a href="/docs/webhooks.html">webhook reference</a></td></tr>
+<tr><td>Instantly, Apollo, Lemlist, Smartlead</td><td>Cold outreach</td><td>Warm replies become leads — the SLA clock starts when a prospect replies</td><td>Webhook URL in the tool</td></tr>
+<tr><td>Zapier, Make</td><td>Automation</td><td>Anything you can trigger becomes a lead</td><td>Webhook URL in a "POST" step</td></tr>
+<tr><td>Twenty CRM</td><td>CRM</td><td>Stage changes and follow-up checks</td><td>Workspace URL, API key</td></tr>
+<tr><td>ActiveCampaign, Mailchimp, Brevo, Notifuse</td><td>Email platform</td><td>Enrolment and engagement for follow-up checks</td><td>API URL/key, audience or workspace ID</td></tr>
+<tr><td>Umami</td><td>Analytics</td><td>Page traffic for conversion checks</td><td>API URL, website ID, API key</td></tr>
+<tr><td>Meta Ads, Google Ads</td><td>Ad platforms</td><td>Spend for CPL (read-only)</td><td>Ad account / customer ID and API credentials</td></tr>
+<tr><td>HubSpot, Salesforce, Slack</td><td colspan="3"><span class="pill">Coming soon</span></td></tr></table>
+
+<h2 id="billing">Subscription &amp; billing</h2>
+<p>The owner manages the plan in <b>Settings → Subscription</b>: see usage against each plan, then upgrade or downgrade in one click. Downgrades are blocked while you're using more than the target plan allows (for example, more campaigns than Starter's 3) — Camplo tells you exactly what to trim. Teammates can see the plan name but can't change it.</p>
+
+<h2 id="security">Security &amp; data</h2>
+<ul>
+  <li>Every workspace's data is isolated. API keys and integration secrets are encrypted at rest (AES-256-GCM).</li>
+  <li>Inbound webhooks are verified by HMAC signature or a secret token; outbound webhooks are signed.</li>
+  <li>Camplo's own staff console shows account-level information only — never your leads or page content.</li>
+  <li>Errors are monitored so problems are fixed before you notice them. Error reports never include request bodies, passwords or cookies.</li>
+</ul>
+
+<h2 id="faq">FAQ</h2>
+<h3>Does Camplo reply to leads for me?</h3><p>No. Camplo makes sure a human replies fast and tells you when they didn't. It never contacts your leads.</p>
+<h3>Can the AI change my campaigns?</h3><p>No. It's read-only by design — there is no button it can press.</p>
+<h3>What happens to leads if a webhook goes offline?</h3><p>Camplo flags the page or source as offline on the dashboard within minutes so you can fix it. Submissions that never reach Camplo can't be recovered by Camplo, which is why it watches so closely.</p>
+<h3>Can my client see their campaign?</h3><p>Yes (Growth and up): Campaign → Share creates a read-only link you can revoke at any time.</p>
+
+<footer>Something missing? Ask the assistant inside Camplo, or contact your account owner.</footer>
+</main>
+</div>
+</body>
+</html>

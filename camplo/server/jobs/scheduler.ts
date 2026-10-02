@@ -7,6 +7,7 @@
  * idempotent sweeps below — driven by `maybeSweep()` on API traffic (at most once a minute) and by /api/cron —
  * cover every time-based rule, so behaviour is the same, only coarser in timing.
  */
+import { captureError } from '../lib/monitor.js';
 import { and, eq, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { campaigns, deployments, leads, tenants, webhookSources } from '../db/schema.js';
@@ -62,7 +63,7 @@ export async function enqueue(name: JobName, data: Record<string, unknown>, opts
   if (opts.delayMs) return null;
   const db = dbRef;
   if (!db) return null;
-  setImmediate(() => { void runJob(db, name, data).catch((e) => console.error(`[job] ${name} failed`, e)); });
+  setImmediate(() => { void runJob(db, name, data).catch((e) => captureError(e, { source: 'job', route: `job:${name}` })); });
   return null;
 }
 
@@ -303,7 +304,7 @@ let running = false;
 export async function runSweeps(db: DB) {
   if (running) return;
   running = true;
-  const step = async (label: string, fn: () => Promise<unknown>) => { try { await fn(); } catch (e) { console.error(`[sweep] ${label} failed`, e); } };
+  const step = async (label: string, fn: () => Promise<unknown>) => { try { await fn(); } catch (e) { void captureError(e, { source: 'job', route: `sweep:${label}` }); } };
   try {
     await step('sla', () => slaSweep(db));
     await step('webhooks', () => webhookSweep(db));

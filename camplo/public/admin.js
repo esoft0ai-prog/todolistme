@@ -3,12 +3,16 @@
    email, AI, Telegram, signup. Aggregate data only — never lead or page content (ADL §7 #5). */
 (function () {
   'use strict';
+  // Browser errors go to Super Admin → Errors (and Sentry when configured).
+  function report(msg, stack) { try { navigator.sendBeacon ? navigator.sendBeacon('/api/monitor/client-error', new Blob([JSON.stringify({ message: String(msg).slice(0, 2000), stack: stack, url: location.href, source: 'admin', userAgent: navigator.userAgent })], { type: 'application/json' })) : 0; } catch (x) { /* never throw from the reporter */ } }
+  window.addEventListener('error', function (e) { report(e.message, e.error && e.error.stack); });
+  window.addEventListener('unhandledrejection', function (e) { var r = e.reason || {}; report(r.message || r, r.stack); });
   var root = document.getElementById('root');
   var overlay = document.getElementById('overlay');
   var ic = window.CamploIcons.ic;
   var TOKEN_KEY = 'camplo-admin-token';
   var PLANS = ['starter', 'growth', 'watchtower', 'agency'];
-  var S = { token: read(), view: 'accounts', section: 'branding', accounts: null, health: null, platform: null, history: [], filter: 'all', q: '', detail: null, error: null, email: '' };
+  var S = { token: read(), view: 'accounts', section: 'branding', accounts: null, health: null, platform: null, history: [], filter: 'all', q: '', detail: null, error: null, email: '', errors: null, errStatus: 'open', openErr: null };
 
   function read() { try { return sessionStorage.getItem(TOKEN_KEY); } catch (e) { return null; } }
   function save(t) { try { if (t) sessionStorage.setItem(TOKEN_KEY, t); else sessionStorage.removeItem(TOKEN_KEY); } catch (e) { /* private mode */ } }
@@ -58,7 +62,7 @@
     return '<div class="adm-wrap">' +
       '<div class="adm-head"><div class="row gap12"><div class="logo">' + esc(brand.charAt(0).toUpperCase()) + '<span>.</span></div><div><div class="h1" style="font-size:24px">Super Admin</div><div class="small">' + esc(brand) + ' platform control</div></div></div>' +
       '<div class="row"><button class="btn btn-ghost btn-sm" data-act="refresh">' + ic('refresh', 14) + ' Refresh</button><button class="btn btn-ghost btn-sm" data-act="logout">Sign out</button></div></div>' +
-      '<nav class="settings-tabs" style="margin-bottom:24px">' + [['accounts', 'Accounts'], ['platform', 'Platform settings'], ['audit', 'Audit log']].map(function (t) {
+      '<nav class="settings-tabs" style="margin-bottom:24px">' + [['accounts', 'Accounts'], ['errors', 'Errors' + (S.errors && S.errors.summary.open ? ' (' + S.errors.summary.open + ')' : '')], ['platform', 'Platform settings'], ['audit', 'Audit log']].map(function (t) {
         return '<button class="subtab ' + (S.view === t[0] ? 'active' : '') + '" data-act="view" data-v="' + t[0] + '">' + t[1] + '</button>';
       }).join('') + '</nav>' + body + '</div>';
   }
@@ -206,6 +210,32 @@
     return out;
   }
 
+  function ago(d) {
+    var m = Math.round((Date.now() - new Date(d).getTime()) / 60000);
+    return m < 1 ? 'just now' : m < 60 ? m + 'm ago' : m < 1440 ? Math.round(m / 60) + 'h ago' : Math.round(m / 1440) + 'd ago';
+  }
+  var SRC = { server: 'Server', job: 'Background job', webhook: 'Outbound webhook', client: 'Browser (app)', admin_client: 'Browser (admin)' };
+  function errorsView() {
+    var e = S.errors;
+    if (!e) return '<div class="small">Loading errors…</div>';
+    var head = '<div class="spread" style="margin-bottom:16px"><div class="small">Unexpected server errors, failed background jobs, failed outbound webhooks and browser errors, grouped by cause. ' +
+      (e.summary.sentry ? 'Also forwarded to Sentry.' : 'Set <span class="mono">SENTRY_DSN</span> to forward them to Sentry as well.') + '</div>' +
+      '<div class="row gap8">' + [['open', 'Open'], ['resolved', 'Resolved'], ['all', 'All']].map(function (x) { return '<button class="chip ' + (S.errStatus === x[0] ? 'active' : '') + '" data-act="errStatus" data-v="' + x[0] + '">' + x[1] + '</button>'; }).join('') +
+      '<button class="btn btn-ghost btn-sm" data-act="errReload">Refresh</button></div></div>';
+    if (!e.data.length) return head + '<div class="card"><div class="small">' + (S.errStatus === 'open' ? 'No open errors. Nice.' : 'Nothing here.') + '</div></div>';
+    return head + '<div class="card" style="padding:0"><table class="adm-table" style="width:100%"><thead><tr><th>Error</th><th>Where</th><th>Account</th><th>Count</th><th>Last seen</th><th></th></tr></thead><tbody>' +
+      e.data.map(function (x) {
+        var open = S.openErr === x.id;
+        return '<tr data-act="errOpen" data-v="' + x.id + '" style="cursor:pointer"><td><span class="badge ' + (x.level === 'warning' ? 'b-amber' : 'b-red') + '">' + esc(SRC[x.source] || x.source) + '</span> <b>' + esc(x.message.slice(0, 140)) + '</b></td>' +
+          '<td class="mono small">' + esc(x.route || '—') + '</td><td class="small">' + esc(x.business || '—') + '</td><td>' + x.count + '</td><td class="small">' + ago(x.lastSeenAt) + '<div class="small">first ' + ago(x.firstSeenAt) + '</div></td>' +
+          '<td>' + (x.resolvedAt ? '<button class="btn btn-ghost btn-sm" data-act="errResolve" data-v="' + x.id + '" data-r="0">Reopen</button>' : '<button class="btn btn-ghost btn-sm" data-act="errResolve" data-v="' + x.id + '" data-r="1">Resolve</button>') + '</td></tr>' +
+          (open ? '<tr><td colspan="6"><pre class="mono small" style="white-space:pre-wrap;max-height:320px;overflow:auto;margin:0">' + esc(x.stack || x.message) + (x.context ? '\n\n' + esc(JSON.stringify(x.context, null, 2)) : '') + '</pre></td></tr>' : '');
+      }).join('') + '</tbody></table></div>';
+  }
+  function loadErrors() {
+    return api('/admin/api/errors?status=' + S.errStatus).then(function (r) { S.errors = r; render(); }, function (e) { toast(e.message, 'error'); });
+  }
+
   function auditView() {
     return '<div class="card"><div class="h3" style="margin-bottom:12px">Platform changes</div>' + historyList(S.history) + '<div class="small" style="margin-top:12px">Account-level actions are in each account\'s History.</div></div>';
   }
@@ -213,7 +243,7 @@
   // ---------------------------------------------------------------- data
   function load() {
     return Promise.all([api('/admin/api/accounts?limit=100'), api('/admin/api/health'), api('/admin/api/platform')]).then(function (r) {
-      S.accounts = r[0].data; S.health = r[1]; S.platform = r[2].sections; S.history = r[2].history; render();
+      S.accounts = r[0].data; S.health = r[1]; S.platform = r[2].sections; S.history = r[2].history; render(); loadErrors();
     }, function (e) { toast(e.message, 'error'); });
   }
   function openDetail(id) {
@@ -227,7 +257,7 @@
 
   function render() {
     if (!S.token) { root.innerHTML = loginView(); overlay.innerHTML = ''; var f = root.querySelector(S.email ? 'input[name=password]' : 'input[name=email]'); if (f) f.focus(); return; }
-    root.innerHTML = shell(S.view === 'platform' ? platformView() : S.view === 'audit' ? auditView() : accountsView());
+    root.innerHTML = shell(S.view === 'platform' ? platformView() : S.view === 'audit' ? auditView() : S.view === 'errors' ? errorsView() : accountsView());
   }
 
   // ---------------------------------------------------------------- events
@@ -253,7 +283,11 @@
     switch (act) {
       case 'refresh': load(); break;
       case 'logout': S.token = null; save(null); render(); break;
-      case 'view': S.view = v; render(); break;
+      case 'view': S.view = v; render(); if (v === 'errors') loadErrors(); break;
+      case 'errStatus': S.errStatus = v; S.errors = null; render(); loadErrors(); break;
+      case 'errReload': loadErrors(); break;
+      case 'errOpen': if (!e.target.closest('button')) { S.openErr = S.openErr === v ? null : v; render(); } break;
+      case 'errResolve': api('/admin/api/errors/' + v + '/resolve', { method: 'POST', body: { resolved: el.getAttribute('data-r') === '1' } }).then(function () { toast(el.getAttribute('data-r') === '1' ? 'Marked resolved' : 'Reopened'); loadErrors(); }, function (x) { toast(x.message, 'error'); }); break;
       case 'section': S.section = v; render(); break;
       case 'filter': S.filter = v; render(); break;
       case 'detail': if (!e.target.closest('button')) openDetail(id); break;

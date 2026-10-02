@@ -53,6 +53,9 @@ export const config = {
   hindsightApiUrl: process.env.HINDSIGHT_API_URL ?? '',
   hindsightApiKey: process.env.HINDSIGHT_API_KEY ?? '',
 
+  // Error monitoring: optional Sentry-compatible DSN (Sentry, GlitchTip). Errors are always kept in error_events.
+  sentryDsn: process.env.SENTRY_DSN ?? '',
+
   // Worker controls (Agent Architecture Part 9)
   workerMaxDepth: num(process.env.WORKER_MAX_DEPTH, 2),
   workerMaxConcurrent: num(process.env.WORKER_MAX_CONCURRENT, 4),

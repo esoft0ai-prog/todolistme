@@ -18,6 +18,7 @@ import { deployments, domains, leads, tenants } from './db/schema.js';
 import { router } from './routes/index.js';
 import { config } from './lib/config.js';
 import { safeEqual } from './lib/crypto.js';
+import { allowClientReport, captureError } from './lib/monitor.js';
 import { resolveAuth, toAuthedContext, type BaseContext } from './lib/orpc.js';
 import { storageFor } from './lib/storage.js';
 import { subscribe } from './rt/hub.js';
@@ -43,8 +44,12 @@ function errorBody(e: ORPCError<string, unknown>) {
 
 const orpc = new OpenAPIHandler(router, {
   customErrorResponseBodyEncoder: errorBody,
-  interceptors: [onError((e) => {
-    if (!(e instanceof ORPCError) || e.status >= 500) console.error('[api]', e);
+  interceptors: [onError((e, opts) => {
+    if (e instanceof ORPCError && e.status < 500) return;
+    const o = opts as { request?: { url?: URL | string; method?: string }; context?: { user?: { id: string; tenantId: string } } };
+    const url = o.request?.url ? new URL(String(o.request.url), 'http://x').pathname : null;
+    const cause = e instanceof ORPCError && e.cause ? e.cause : e;
+    void captureError(cause, { source: 'server', route: url ? `${o.request?.method ?? ''} /api${url}`.trim() : null, userId: o.context?.user?.id ?? null, tenantId: o.context?.user?.tenantId ?? null });
   })],
 });
 
@@ -70,9 +75,9 @@ function sendUnavailable(res: Response, why: 'missing' | 'paused' | 'offline') {
   res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${msg[0]}</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.5 system-ui,sans-serif;background:#f6f6f8;color:#1a1a24}div{text-align:center;padding:24px}h1{font-size:22px;margin:0 0 8px}p{margin:0;color:#5a5a70}</style></head><body><div><h1>${msg[0]}</h1><p>${msg[1]}</p></div></body></html>`);
 }
 
-function sendError(res: Response, e: unknown) {
+function sendError(res: Response, e: unknown, req?: Request) {
   if (e instanceof ORPCError) { res.status(e.status).json(errorBody(e)); return; }
-  console.error(e);
+  void captureError(e, { source: 'server', route: req ? `${req.method} ${req.path}` : null });
   res.status(500).json({ code: 'INTERNAL_SERVER_ERROR', message: 'Something went wrong on our end. Try again in a moment.' });
 }
 
@@ -81,7 +86,12 @@ async function authCtx(req: Req, db: DB) {
   return toAuthedContext(base, await resolveAuth(db, req.headers));
 }
 
+let processHooks = false;
 export function createApp() {
+  if (!processHooks) {
+    processHooks = true;
+    process.on('unhandledRejection', (e) => void captureError(e, { source: 'server', route: 'unhandledRejection' }));
+  }
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', true);
@@ -170,6 +180,22 @@ export function createApp() {
     await handleUpdate(db, scope, req.body);
     res.json({ ok: true });
   });
+  // Browser error reports from the app and Super Admin console (public, rate-limited, size-capped).
+  app.post('/api/monitor/client-error', express.json({ limit: '32kb' }), wrap(async (req, res, db) => {
+    if (!allowClientReport(req.ip ?? 'anon')) { res.status(429).json({ ok: false }); return; }
+    const b = (req.body ?? {}) as { message?: unknown; stack?: unknown; url?: unknown; source?: unknown; userAgent?: unknown };
+    const message = typeof b.message === 'string' ? b.message.slice(0, 2000) : '';
+    if (!message) { res.status(400).json({ ok: false }); return; }
+    const who = await resolveAuth(db, req.headers).catch(() => null);
+    const err = Object.assign(new Error(message), { name: 'BrowserError', stack: typeof b.stack === 'string' ? b.stack.slice(0, 8000) : undefined });
+    const route = typeof b.url === 'string' ? (() => { try { const u = new URL(b.url as string); return u.pathname + u.hash.split('?')[0]; } catch { return null; } })() : null;
+    await captureError(err, {
+      source: b.source === 'admin' ? 'admin_client' : 'client', route,
+      userId: who?.user?.id ?? null, tenantId: who?.user?.tenantId ?? null,
+      context: { userAgent: typeof b.userAgent === 'string' ? b.userAgent.slice(0, 300) : req.header('user-agent')?.slice(0, 300) },
+    });
+    res.status(204).end();
+  }));
   app.post('/api/telegram/webhook', express.json(), telegramHook(() => 'global'));
   app.post('/api/telegram/:tenantId', express.json(), telegramHook((req) => String(req.params.tenantId)));
 
@@ -272,7 +298,7 @@ export function createApp() {
   app.use(express.static(publicDir, { extensions: ['html'] }));
   app.get(/^\/(?!api\/).*/, (_req, res) => res.sendFile(path.join(publicDir, 'index.html')));
 
-  app.use((e: unknown, _req: Request, res: Response, _next: NextFunction) => sendError(res, e));
+  app.use((e: unknown, req: Request, res: Response, _next: NextFunction) => sendError(res, e, req));
   return app;
 }
 

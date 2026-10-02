@@ -3,6 +3,7 @@
  * events, memory retention and outbound webhooks. Nothing here throws into the
  * caller — a failed webhook or memory write never fails a user's action.
  */
+import { captureError } from '../lib/monitor.js';
 import { and, eq } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { campaignLogs, notifications, outboundWebhooks, workspaceLogs } from '../db/schema.js';
@@ -41,10 +42,11 @@ export function fireOutbound(db: DB, tenantId: string, event: OutboundEvent, dat
       const headers: Record<string, string> = { 'Content-Type': 'application/json', 'X-Camplo-Event': event };
       if (h.secretEncrypted) headers['X-Camplo-Signature'] = `sha256=${hmacHex(decrypt(h.secretEncrypted), body)}`;
       try {
-        await fetch(h.destinationUrl, { method: 'POST', headers, body, signal: AbortSignal.timeout(8000) });
+        const res = await fetch(h.destinationUrl, { method: 'POST', headers, body, signal: AbortSignal.timeout(8000) });
+        if (!res.ok) throw new Error(`Outbound ${event} returned HTTP ${res.status}`);
         await db.update(outboundWebhooks).set({ lastSentAt: new Date() }).where(eq(outboundWebhooks.id, h.id));
       } catch (e) {
-        console.warn(`[outbound] ${event} → ${h.destinationUrl} failed`, (e as Error).message);
+        void captureError(e, { source: 'webhook', level: 'warning', route: `outbound:${event}`, tenantId, context: { host: new URL(h.destinationUrl).host } });
       }
     }
   })().catch(() => {});

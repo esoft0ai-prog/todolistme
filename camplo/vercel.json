@@ -12,14 +12,42 @@
     }
   },
   "rewrites": [
-    { "source": "/admin", "destination": "/admin.html" },
-    { "source": "/(.*)", "destination": "/api/index" }
+    {
+      "source": "/admin",
+      "destination": "/admin.html"
+    },
+    {
+      "source": "/docs",
+      "destination": "/docs/index.html"
+    },
+    {
+      "source": "/docs/webhooks",
+      "destination": "/docs/webhooks.html"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/api/index"
+    }
   ],
-  "crons": [{ "path": "/api/cron", "schedule": "0 6 * * *" }],
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "0 6 * * *"
+    }
+  ],
   "headers": [
-    { "source": "/(.*)", "headers": [
-      { "key": "X-Content-Type-Options", "value": "nosniff" },
-      { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
-    ] }
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        }
+      ]
+    }
   ]
 }

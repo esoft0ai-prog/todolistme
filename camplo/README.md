@@ -82,6 +82,28 @@ ADL §5 names are primary; the older names in brackets still work.
 | `ALLOW_DIRECT_PLAN_CHANGE` | `true` lets upgrades apply without Polar checkout (demo/testing) |
 | `CRON_SECRET` | Bearer token for `/api/cron` (Vercel Cron sends it automatically) |
 | `HINDSIGHT_API_URL`, `HINDSIGHT_API_KEY` | Hindsight memory (one bank per workspace, `chunks` mode). Hindsight needs no LLM key of its own for Camplo: fact extraction and reflection run on each workspace's AI provider (BYOK → fallback → Camplo OpenRouter). Built-in relational memory otherwise |
+| `SENTRY_DSN` | Optional. Forwards captured errors to Sentry (or GlitchTip / any Sentry-compatible service). Errors are always stored in `error_events` either way |
+
+## Documentation
+
+| Audience | Where |
+|---|---|
+| Clients and prospects — what Camplo does, plans, setup, every screen, roles & permissions, integrations, FAQ | [`public/docs/index.html`](public/docs/index.html), served at **`/docs`** (linked from the avatar menu → Help & docs) |
+| Developers integrating with Camplo — inbound lead & lifecycle webhooks (payload fields, signing for Camplo/Tally/Typeform/token, responses) and every outbound event with its exact payload | [`public/docs/webhooks.html`](public/docs/webhooks.html), served at **`/docs/webhooks.html`** (linked from Settings → Integrations and Webhooks & API) |
+| Operators | This README |
+
+## Error monitoring
+
+Captured automatically, grouped by fingerprint (ids and numbers normalised) into `error_events`, and listed in **Super Admin → Errors** with count, first/last seen, account, route and stack; resolve or reopen from there (a recurrence reopens a resolved group).
+
+| Source | What is captured |
+|---|---|
+| `server` | Unexpected API errors (oRPC 5xx and non-API Express errors) and unhandled promise rejections |
+| `job` | Failed background jobs, sweeps and BullMQ worker jobs |
+| `webhook` | Outbound webhook deliveries that time out or return non-2xx (level `warning`) |
+| `client` / `admin_client` | Browser errors from the app and the Super Admin console via `POST /api/monitor/client-error` (rate-limited per IP, 32 KB cap, max 20 reports per page load) |
+
+Request bodies, cookies and headers are never recorded. Set `SENTRY_DSN` to also forward every event to Sentry via its envelope API (no SDK dependency).
 
 ## Super Admin console
 
@@ -133,6 +155,8 @@ Columns: `tenants.team_size / suspended_at / notification_prefs`, `users.notify_
 Tables: `sessions` (rotating refresh tokens), `one_time_tokens` (reset/invite/ack/magic-login links), `notifications`,
 `workspace_logs`, `page_visits`, `stored_files`, `super_admins`, `platform_settings` (migration 0001; also makes
 `admin_action_log.target_tenant_id` nullable for platform-wide entries).
+Later migrations: 0002 `users.permissions` (per-teammate permission overrides), 0003 `integrations.config` +
+`integrations.secrets_encrypted` (per-tool settings and encrypted credentials), 0004 `error_events` (error monitoring).
 
 ## ADL delta — how each decision landed
 

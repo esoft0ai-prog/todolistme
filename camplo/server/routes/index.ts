@@ -350,6 +350,10 @@ type PlatformSection = keyof typeof PLATFORM_SCHEMAS;
 // ------------------------------------------------------------------ super admin (8)
 const adminAuthed = pub.use(async ({ context, next }) => next({ context: { adminId: await admin.verifyAdminToken(bearer(context.headers)) } }));
 const adminRoutes = {
+  errors: adminAuthed.route(r('GET', '/admin/api/errors')).input(z.object({ status: z.enum(['open', 'resolved', 'all']).optional() }))
+    .handler(({ input, context }) => admin.listErrors(context.db, input.status)),
+  resolveError: adminAuthed.route(r('POST', '/admin/api/errors/{id}/resolve')).input(z.object({ id, resolved: z.boolean().optional() }))
+    .handler(({ input, context }) => admin.resolveError(context.db, context.adminId, input.id, input.resolved ?? true)),
   login: pub.route(r('POST', '/admin/api/login')).input(z.object({ email: z.string().email(), password: z.string(), code: z.string().length(6) }))
     .handler(({ input, context }) => admin.adminLogin(context.db, input.email, input.password, input.code)),
   accounts: adminAuthed.route(r('GET', '/admin/api/accounts')).input(pageQuery).handler(async ({ input, context }) => paginate(await admin.listAccounts(context.db), input)),

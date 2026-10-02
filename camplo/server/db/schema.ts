@@ -661,3 +661,21 @@ export const platformSettings = pgTable('platform_settings', {
   updatedBy: varchar('updated_by', { length: 255 }),
   updatedAt: ts('updated_at').notNull().defaultNow(),
 });
+
+/** Error monitoring: server, job, webhook and browser errors, grouped by fingerprint. Super Admin → Errors. */
+export const errorEvents = pgTable('error_events', {
+  id: id(),
+  fingerprint: varchar('fingerprint', { length: 64 }).notNull(),
+  source: varchar('source', { length: 20 }).notNull(), // server | job | webhook | client | admin_client
+  level: varchar('level', { length: 10 }).notNull().default('error'), // error | warning
+  message: text('message').notNull(),
+  stack: text('stack'),
+  route: varchar('route', { length: 500 }),
+  tenantId: uuid('tenant_id'),
+  userId: uuid('user_id'),
+  context: jsonb('context').$type<Record<string, unknown>>(),
+  count: integer('count').notNull().default(1),
+  firstSeenAt: ts('first_seen_at').notNull().defaultNow(),
+  lastSeenAt: ts('last_seen_at').notNull().defaultNow(),
+  resolvedAt: ts('resolved_at'),
+}, (t) => [uniqueIndex('idx_error_events_fingerprint').on(t.fingerprint), index('idx_error_events_last_seen').on(t.lastSeenAt)]);

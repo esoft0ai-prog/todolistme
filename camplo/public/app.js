@@ -3,6 +3,17 @@
   'use strict';
   var MIN = 60000, HOUR = 60 * MIN, DAY = 24 * HOUR;
   var ic = window.CamploIcons.ic, lifeIcon = window.CamploIcons.lifeIcon;
+  // Browser errors go to the Camplo error monitor (Super Admin → Errors, and Sentry when configured).
+  var reported = 0;
+  function reportError(msg, stack) {
+    if (++reported > 20) return; // a broken render loop shouldn't flood the monitor
+    try {
+      var body = JSON.stringify({ message: String(msg).slice(0, 2000), stack: stack, url: location.href, userAgent: navigator.userAgent });
+      fetch('/api/monitor/client-error', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body, credentials: 'same-origin', keepalive: true }).catch(function () {});
+    } catch (x) { /* never throw from the reporter */ }
+  }
+  window.addEventListener('error', function (e) { if (e.message) reportError(e.message, e.error && e.error.stack); });
+  window.addEventListener('unhandledrejection', function (e) { var r = e.reason || {}; if (r.handled || r.status) return; reportError(r.message || r, r.stack); });
   var app = document.getElementById('app');
   var overlay = document.getElementById('overlay');
 
@@ -1124,10 +1135,10 @@
   function setWebhooks() {
     var inb = lazy('set:inbound', '/webhooks/inbound?limit=100', list), out = lazy('set:outbound', '/webhooks/outbound?limit=100', list), ints = lazy('set:int', '/integrations?limit=100', list);
     if (!inb || !out) return skel(4);
-    return '<div class="col gap16" style="max-width:1080px"><div class="card"><div class="spread wrap"><div><div class="h3">Inbound webhooks</div><div class="small">External tools send lead data to these URLs. Camplo receives and attributes it automatically. Every hosted page also has its own signed webhook (see Pages).</div></div></div>' +
+    return '<div class="col gap16" style="max-width:1080px"><div class="card"><div class="spread wrap"><div><div class="h3">Inbound webhooks</div><div class="small">External tools send lead data to these URLs. Camplo receives and attributes it automatically. Every hosted page also has its own signed webhook (see Pages). <a href="/docs/webhooks.html#leads" target="_blank" rel="noopener">Payload &amp; signing reference ↗</a></div></div></div>' +
       '<div style="margin-top:12px">' + (inb.__error ? errBox(inb) : inb.length ? inb.map(function (w) { return '<div class="list-row"><span class="mono grow" style="word-break:break-all">' + esc(w.url) + '</span><span style="width:220px">' + esc(w.sourceLabel) + (w.campaignName ? '<div class="ts">→ ' + esc(w.campaignName) + '</div>' : '') + '</span><span class="ts" style="width:110px">' + ago(ms(w.lastReceivedAt)) + '</span><span class="badge ' + (w.status === 'active' ? 'b-green' : 'b-grey') + '">' + w.status + '</span><button class="close" data-act="copy" data-v="' + esc(w.url) + '">' + ic('copy', 14) + '</button><button class="close" data-act="deleteInbound" data-id="' + w.id + '">' + ic('x', 14) + '</button></div>'; }).join('') : '<div class="small">No named inbound webhooks yet.</div>') + '</div>' +
       '<div class="row wrap" style="margin-top:12px"><input class="input" id="ibLabel" placeholder="Source label e.g. Facebook Ads — Black Friday" style="max-width:320px"/><select class="select" id="ibCamp" style="width:220px"><option value="">No campaign</option>' + D.campaigns.map(function (c) { return '<option value="' + c.id + '">' + esc(c.name) + '</option>'; }).join('') + '</select><button class="btn btn-primary" data-act="createInbound">Add Inbound Webhook</button></div></div>' +
-      '<div class="card"><div><div class="h3">Outbound webhooks</div><div class="small">Camplo sends events to these URLs — signed with HMAC-SHA256 in X-Camplo-Signature when a secret is set.</div></div><div style="margin-top:12px">' +
+      '<div class="card"><div><div class="h3">Outbound webhooks</div><div class="small">Camplo sends events to these URLs — signed with HMAC-SHA256 in X-Camplo-Signature when a secret is set. <a href="/docs/webhooks.html#events" target="_blank" rel="noopener">What each event sends ↗</a></div></div><div style="margin-top:12px">' +
       (out.__error ? errBox(out) : out.length ? out.map(function (w) { return '<div class="list-row"><span class="mono grow" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(w.destinationUrl) + '</span><span class="chip">' + esc(w.eventTrigger) + '</span><span class="ts" style="width:110px">' + (w.lastSentAt ? ago(ms(w.lastSentAt)) : 'never sent') + '</span><span class="badge ' + (w.status === 'active' ? 'b-green' : 'b-grey') + '">' + w.status + '</span><button class="close" data-act="deleteOutbound" data-id="' + w.id + '">' + ic('x', 14) + '</button></div>'; }).join('') : '<div class="small">No outbound webhooks yet.</div>') + '</div>' +
       '<div class="row wrap" style="margin-top:12px"><input class="input" id="obUrl" placeholder="https://hooks.example.com/camplo" style="max-width:320px"/><select class="select" id="obEvent" style="width:200px">' + EVENTS.map(function (e) { return '<option>' + e + '</option>'; }).join('') + '</select><input class="input" id="obSecret" placeholder="HMAC secret (optional)" style="width:200px"/><button class="btn btn-primary" data-act="createOutbound">Add Outbound Webhook</button></div></div>' +
       '<div class="card"><div class="h3">Third-party integration API keys</div>' + (!ints || ints.__error ? '' : (ints.filter(function (i) { return i.status === 'connected' || i.status === 'failed'; }).map(function (i) { var sk = Object.keys(i.secrets || {}); return '<div class="list-row"><span class="grow"><b>' + esc(i.name) + '</b>' + (i.webhooks && i.webhooks.leads ? ' <span class="chip">Lead webhook</span>' : '') + '</span><span class="mono">' + esc(sk.length ? i.secrets[sk[0]] : (i.apiKeyMasked || 'No key needed')) + '</span>' + statusBadge(i.status) + '<button class="btn btn-ghost btn-sm" data-act="connectInt" data-v="' + i.provider + '">Edit</button></div>'; }).join('') || '<div class="small" style="margin-top:8px">No integrations connected yet. <a href="#/settings/integrations">Go to the Integrations tab.</a></div>')) + '</div>' +
@@ -1941,7 +1952,7 @@
           '<div class="menu-item" data-go="settings/profile">Profile &amp; picture</div><div class="menu-item" data-go="me">My Performance</div><div class="menu-item" data-go="settings">Settings</div>' +
           (isOwner() ? '<div class="menu-item" data-go="settings/subscription">Subscription: ' + cap(D.plan) + ' <span class="chip chip-plan" style="margin-left:auto">Manage</span></div>' : '<div class="menu-item" style="cursor:default;color:var(--text-muted)">Plan: ' + cap(D.plan) + '</div>') +
           '<div class="menu-item" data-act="shortcuts">Keyboard shortcuts</div>' +
-          '<div style="height:1px;background:var(--border-subtle);margin:4px 0"></div><div class="menu-item" style="color:var(--status-red)" data-act="logout">Sign out</div>', el, 260);
+          '<a class="menu-item" href="/docs/" target="_blank" rel="noopener" style="display:block;color:inherit;text-decoration:none">Help &amp; docs</a>' + '<div style="height:1px;background:var(--border-subtle);margin:4px 0"></div><div class="menu-item" style="color:var(--status-red)" data-act="logout">Sign out</div>', el, 260);
         break;
       case 'logout': api('/auth/logout', { method: 'POST' }).finally(function () { D = null; C = {}; streams.forEach(function (s) { s.close(); }); closeOverlay(); go('login'); }); break;
       case 'shortcuts': openOverlay(modal('Keyboard shortcuts', '<dl class="kv" style="grid-template-columns:1fr auto"><dt>Search</dt><dd class="mono">⌘ K</dd><dt>Post note / send message</dt><dd class="mono">⌘ Enter</dd><dt>Close panel</dt><dd class="mono">Esc</dd></dl>')); break;

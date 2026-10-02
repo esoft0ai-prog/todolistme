@@ -7,7 +7,7 @@ import { platform } from '../lib/platform.js';
 import { scheduleSuspensionGrace, SUSPENDED_OFFLINE } from '../jobs/scheduler.js';
 import { planForProduct } from '../lib/polar.js';
 import { createHmac } from 'node:crypto';
-import { and, desc, eq, gte, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, isNotNull, isNull, sql } from 'drizzle-orm';
 import { SignJWT, jwtVerify } from 'jose';
 import type { DB } from '../db/client.js';
 import { adminActionLog, aiProviderConfigs, campaignRetrospectives, deployments, leads, superAdmins, tenants, users, webhookSources } from '../db/schema.js';
@@ -267,3 +267,29 @@ export async function handlePolarEvent(db: DB, evt: { type: string; data: any })
   return { handled: true };
 }
 
+
+// ------------------------------------------------------------------ error monitoring
+
+export async function listErrors(db: DB, status: 'open' | 'resolved' | 'all' = 'open') {
+  const { errorEvents } = await import('../db/schema.js');
+  const where = status === 'open' ? isNull(errorEvents.resolvedAt) : status === 'resolved' ? isNotNull(errorEvents.resolvedAt) : undefined;
+  const rows = await db.select({ e: errorEvents, business: tenants.businessName }).from(errorEvents).leftJoin(tenants, eq(tenants.id, errorEvents.tenantId))
+    .where(where).orderBy(desc(errorEvents.lastSeenAt)).limit(200);
+  const dayAgo = Date.now() - 24 * 3600_000;
+  return {
+    summary: {
+      open: rows.filter((r) => !r.e.resolvedAt).length,
+      last24h: rows.filter((r) => r.e.lastSeenAt.getTime() > dayAgo).length,
+      sentry: !!config.sentryDsn,
+    },
+    data: rows.map((r) => ({ ...r.e, business: r.business })),
+  };
+}
+
+export async function resolveError(db: DB, adminId: string, id: string, resolved = true) {
+  const { errorEvents } = await import('../db/schema.js');
+  const [row] = await db.update(errorEvents).set({ resolvedAt: resolved ? new Date() : null }).where(eq(errorEvents.id, id)).returning();
+  if (!row) throw fail.notFound('Error not found.');
+  await logPlatformChange(db, adminId, resolved ? 'error_resolved' : 'error_reopened', row.message.slice(0, 200));
+  return row;
+}
