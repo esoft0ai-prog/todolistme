@@ -143,7 +143,11 @@ export function createApp() {
   }));
   app.post('/api/v1/hooks/:id', raw, wrap(async (req, res, db) => {
     const body = req.body as Buffer;
-    const r = await ingestNamed(db, String(req.params.id), body, req.header('x-camplo-signature') ?? req.header('x-signature'), parse(body, req.header('content-type')));
+    const auth = {
+      camplo: req.header('x-camplo-signature') ?? req.header('x-signature'), tally: req.header('tally-signature'), typeform: req.header('typeform-signature'),
+      token: typeof req.query.token === 'string' ? req.query.token : req.header('x-camplo-token'),
+    };
+    const r = await ingestNamed(db, String(req.params.id), body, auth, parse(body, req.header('content-type')));
     ingestErrors.record(r.status === 201);
     res.status(r.status).json(r.status === 201 ? { ok: true, lead_id: r.leadId } : { ok: false });
   }));

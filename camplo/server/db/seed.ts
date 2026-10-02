@@ -213,12 +213,15 @@ export async function seedDemo(db: DB) {
   }
 
   // Integrations (Watchtower: several connected) + cross-tool rules/breaches.
-  const [twenty] = await db.insert(s.integrations).values({ tenantId: T, provider: 'twenty_crm', connectionMethod: 'api_key', apiKeyEncrypted: encrypt('twenty_demo_key_7f3a', 'integration'), activeModes: ['receive', 'send', 'query'], status: 'connected', lastVerifiedAt: ago(DAY) }).returning();
+  const sealed = (o: Record<string, string>) => encrypt(JSON.stringify(o), 'integration');
+  const [twenty] = await db.insert(s.integrations).values({ tenantId: T, provider: 'twenty_crm', connectionMethod: 'api_key', apiKeyEncrypted: encrypt('twenty_demo_key_7f3a', 'integration'), secretsEncrypted: sealed({ apiKey: 'twenty_demo_key_7f3a' }), config: { baseUrl: 'https://crm.northbeam.demo' }, activeModes: ['receive', 'send', 'query'], status: 'connected', lastVerifiedAt: ago(DAY) }).returning();
+  const [tallyHook] = await db.insert(s.inboundWebhooks).values({ tenantId: T, sourceLabel: 'Tally', url: 'pending', secretEncrypted: encrypt(tok(24), 'webhook'), campaignId: bf.id, lastReceivedAt: ago(4 * MIN) }).returning();
+  await db.update(s.inboundWebhooks).set({ url: `${config.appUrl}/api/v1/hooks/${tallyHook.id}` }).where(sql`${s.inboundWebhooks.id} = ${tallyHook.id}`);
   await db.update(s.integrations).set({ webhookUrl: `${config.appUrl}/api/v1/lifecycle/${twenty.id}/${tok(18)}` }).where(sql`${s.integrations.id} = ${twenty.id}`);
   await db.insert(s.integrations).values([
-    { tenantId: T, provider: 'tally', connectionMethod: 'webhook', activeModes: ['receive'], status: 'connected', lastVerifiedAt: ago(DAY) },
-    { tenantId: T, provider: 'umami', connectionMethod: 'api_key', apiKeyEncrypted: encrypt('umami_demo_key_91c2', 'integration'), activeModes: ['query'], status: 'connected', lastVerifiedAt: ago(DAY) },
-    { tenantId: T, provider: 'gohighlevel', connectionMethod: 'api_key', apiKeyEncrypted: encrypt('ghl_demo_key_0b77', 'integration'), activeModes: ['receive', 'send', 'query'], status: 'failed', lastVerifiedAt: ago(2 * DAY) },
+    { tenantId: T, provider: 'tally', connectionMethod: 'webhook', activeModes: ['receive'], status: 'connected', config: { inboundWebhookId: tallyHook.id }, lastVerifiedAt: ago(DAY) },
+    { tenantId: T, provider: 'umami', connectionMethod: 'api_key', apiKeyEncrypted: encrypt('umami_demo_key_91c2', 'integration'), secretsEncrypted: sealed({ apiKey: 'umami_demo_key_91c2' }), config: { baseUrl: 'https://api.umami.is/v1', websiteId: '4fb7fa4c-5b46-438d-94b3-3a8fb9bc2e8b' }, activeModes: ['query'], status: 'connected', lastVerifiedAt: ago(DAY) },
+    { tenantId: T, provider: 'gohighlevel', connectionMethod: 'api_key', apiKeyEncrypted: encrypt('ghl_demo_key_0b77', 'integration'), secretsEncrypted: sealed({ apiKey: 'ghl_demo_key_0b77' }), config: { locationId: 've9EPM428h8vShlRW1KT' }, activeModes: ['receive', 'send', 'query'], status: 'failed', lastVerifiedAt: ago(2 * DAY) },
   ]);
   const [rule] = await db.insert(s.crossToolSlaRules).values([
     { tenantId: T, integrationId: twenty.id, ruleType: 'not_contacted', thresholdValue: 24, thresholdUnit: 'hours', enabled: true, notificationChannels: ['ai_panel', 'email'] },

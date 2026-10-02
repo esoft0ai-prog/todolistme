@@ -411,6 +411,9 @@ export const integrations = pgTable('integrations', {
   oauthAccessTokenEncrypted: text('oauth_access_token_encrypted'),
   oauthRefreshTokenEncrypted: text('oauth_refresh_token_encrypted'),
   webhookUrl: varchar('webhook_url', { length: 500 }),
+  // proposed: provider-specific settings (account URL, location ID, website ID…) and extra secrets (JSON, encrypted)
+  config: jsonb('config').$type<Record<string, string>>(),
+  secretsEncrypted: text('secrets_encrypted'),
   activeModes: jsonb('active_modes').$type<Array<'receive' | 'send' | 'query'>>().notNull().default([]),
   status: integrationStatus('status').notNull().default('not_connected'),
   lastVerifiedAt: ts('last_verified_at'),

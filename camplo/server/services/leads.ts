@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gte, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { createHmac } from 'node:crypto';
 import type { DB } from '../db/client.js';
 import {
   campaigns, deployments, inboundWebhooks, insights, integrations, leadAssignmentHistory, leadExternalMappings, leadLifecycleEvents, leads,
@@ -336,12 +337,29 @@ export async function ingestDeployment(db: DB, tenantId: string, deploymentId: s
 }
 
 /** POST /api/v1/hooks/:inboundId — named inbound endpoints (§17.6), HMAC-signed with the endpoint secret. */
-export async function ingestNamed(db: DB, inboundId: string, rawBody: Buffer, signature: string | undefined, body: unknown) {
+/**
+ * Inbound (named) lead webhooks accept any one of:
+ *   X-Camplo-Signature: sha256=<hex HMAC-SHA256(raw body)>      — Camplo's own scheme
+ *   Tally-Signature: <base64 HMAC-SHA256(raw body)>             — Tally
+ *   Typeform-Signature: sha256=<base64 HMAC-SHA256(raw body)>   — Typeform
+ *   ?token=<secret> or X-Camplo-Token: <secret>                 — tools that cannot sign (Zapier, Make, Instantly…)
+ */
+export function verifyInbound(secret: string, rawBody: Buffer, auth: { camplo?: string; tally?: string; typeform?: string; token?: string }): boolean {
+  if (auth.camplo && verifySignature(secret, rawBody, auth.camplo)) return true;
+  const b64 = createHmac('sha256', secret).update(rawBody).digest('base64');
+  if (auth.tally && safeEqual(auth.tally.trim(), b64)) return true;
+  if (auth.typeform && safeEqual(auth.typeform.replace(/^sha256=/, '').trim(), b64)) return true;
+  if (auth.token && safeEqual(auth.token, secret)) return true;
+  return false;
+}
+
+export async function ingestNamed(db: DB, inboundId: string, rawBody: Buffer, auth: string | undefined | { camplo?: string; tally?: string; typeform?: string; token?: string }, body: unknown) {
   if (!/^[0-9a-f-]{36}$/i.test(inboundId)) return { status: 404 as const };
   const [row] = await db.select({ w: inboundWebhooks, t: tenants }).from(inboundWebhooks).innerJoin(tenants, eq(tenants.id, inboundWebhooks.tenantId))
     .where(eq(inboundWebhooks.id, inboundId));
   if (!row || row.w.status !== 'active') return { status: 404 as const };
-  if (!verifySignature(decrypt(row.w.secretEncrypted), rawBody, signature)) return { status: 401 as const };
+  const a = typeof auth === 'object' && auth ? auth : { camplo: auth };
+  if (!verifyInbound(decrypt(row.w.secretEncrypted), rawBody, a)) return { status: 401 as const };
   await db.update(inboundWebhooks).set({ lastReceivedAt: new Date() }).where(eq(inboundWebhooks.id, inboundId));
   const lead = await createLead(db, row.t, { deploymentId: null, campaignId: row.w.campaignId, sourceSystem: row.w.sourceLabel, vip: false, data: normalizePayload(body) });
   return { status: 201 as const, leadId: lead.id };

@@ -1049,26 +1049,56 @@
   }
   var INT_NAMES = {};
   var INT_LOGO = { systeme_io: ['S', '#2E7DF6'], gohighlevel: ['GH', '#1E88E5'], tally: ['T', '#111'], typeform: ['Tf', '#262627'], custom: ['{}', '#363650'], instantly: ['In', '#5B3DF5'], apollo: ['Ap', '#3A3AFF'], lemlist: ['Le', '#6C4CF6'], smartlead: ['Sm', '#0F766E'], twenty_crm: ['20', '#222'], hubspot: ['H', '#FF7A59'], salesforce: ['Sf', '#00A1E0'], umami: ['U', '#333'], activecampaign: ['AC', '#356AE6'], mailchimp: ['Mc', '#C9A300'], brevo: ['Br', '#0B996E'], notifuse: ['N', '#444'], meta_ads: ['M', '#0866FF'], google_ads: ['G', '#34A853'], slack: ['Sl', '#4A154B'], zapier: ['Z', '#FF4F00'], make: ['Mk', '#6D00CC'] };
+  var SIGNING = {
+    camplo: 'Sign the raw request body with HMAC-SHA256 and send it as <span class="mono">X-Camplo-Signature: sha256=&lt;hex&gt;</span> — or use the URL as shown, which carries a secret token.',
+    tally: 'Paste the signing secret into Tally\'s webhook "Signing secret" field. Camplo checks the <span class="mono">Tally-Signature</span> header.',
+    typeform: 'Paste the signing secret into the Typeform webhook "Secret" setting. Camplo checks the <span class="mono">Typeform-Signature</span> header.',
+    token: 'This tool cannot sign requests, so the URL carries a secret token. Treat the URL like a password.',
+  };
+  function copyRow(label, value, secret) {
+    var id = 'cp' + Math.random().toString(36).slice(2, 8);
+    return '<div class="label" style="margin-top:12px">' + label + '</div><div class="input-wrap"><input class="input mono" id="' + id + '" readonly ' + (secret ? 'type="password"' : '') + ' value="' + esc(value) + '" style="font-size:12px"/><span class="acts">' + (secret ? '<button data-act="eye" data-for="' + id + '">' + ic('eye', 14) + '</button>' : '') + '<button data-act="copy" data-v="' + esc(value) + '">' + ic('copy', 14) + '</button></span></div>';
+  }
+  function intDetails(i) {
+    var w = i.webhooks || {};
+    var out = '';
+    if (w.leads) out += copyRow('Lead webhook URL — paste into ' + esc(i.name), w.leads) + (w.signingSecret && i.signing !== 'token' ? copyRow('Signing secret', w.signingSecret, true) : '') +
+      '<div class="ts" style="margin-top:6px">' + (SIGNING[i.signing] || '') + '</div>' + (w.lastReceivedAt ? '<div class="ts">Last lead received ' + ago(ms(w.lastReceivedAt)) + '</div>' : '<div class="ts">No leads received yet.</div>');
+    if (w.lifecycle) out += copyRow('Lifecycle webhook URL (stage changes, enrolments)', w.lifecycle);
+    var settings = i.fields.filter(function (f) { return f.type !== 'secret' && i.settings[f.key]; }).map(function (f) { return '<dt>' + esc(f.label) + '</dt><dd class="mono">' + esc(i.settings[f.key]) + '</dd>'; });
+    var secrets = i.fields.filter(function (f) { return f.type === 'secret' && i.secrets[f.key]; }).map(function (f) { return '<dt>' + esc(f.label) + '</dt><dd class="mono">' + esc(i.secrets[f.key]) + '</dd>'; });
+    if (settings.length || secrets.length) out += '<dl class="kv" style="grid-template-columns:200px 1fr">' + settings.concat(secrets).join('') + '</dl>';
+    return out;
+  }
+  function setupSteps(i) {
+    return i.setup && i.setup.length ? '<div class="label" style="margin-top:16px">How to set it up</div><ol class="small" style="margin:8px 0 0;padding-left:20px;line-height:1.7">' + i.setup.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ol>' + (i.docsUrl ? '<a class="small" href="' + esc(i.docsUrl) + '" target="_blank" rel="noopener">' + esc(i.name) + ' documentation ↗</a>' : '') : '';
+  }
   function setIntegrations() {
     var v = lazy('set:int', '/integrations?limit=100', list);
     if (!v) return skel(4);
     if (v.__error) return errBox(v);
     var groups = [], by = {};
     v.forEach(function (i) { INT_NAMES[i.provider] = i.name; if (!by[i.category]) { by[i.category] = []; groups.push(i.category); } by[i.category].push(i); });
-    return groups.map(function (g) {
-      return '<div class="section-label"><span class="label">' + esc(g) + '</span></div><div class="int-grid">' + by[g].map(function (i) {
-        var soon = i.status === 'coming_soon', lg = INT_LOGO[i.provider] || ['?', '#333'];
-        var badge = { connected: '<span class="badge b-green">Connected</span>', not_connected: '<span class="badge b-grey">Not connected</span>', failed: '<span class="badge b-red">Connection failed</span>', coming_soon: '<span class="badge b-grey">Coming soon</span>' }[i.status];
-        return '<div class="intcard ' + (soon ? 'soon' : '') + '"><div class="spread"><div class="row"><span class="int-logo" style="background:' + lg[1] + '">' + lg[0] + '</span><div class="h3" style="font-size:14px">' + esc(i.name) + '</div></div>' + badge + '</div>' +
-          (i.blurb ? '<div class="small">' + esc(i.blurb) + '</div>' : '') +
-          '<div class="row wrap">' + i.methods.map(function (m) { return '<span class="chip">' + { webhook: 'Webhook', api_key: 'API Key', oauth: 'OAuth' }[m] + '</span>'; }).join('') + '</div>' +
-          (i.status === 'connected' ? '<div class="row wrap">' + [['receive', 'Receiving'], ['send', 'Sending'], ['query', 'Querying']].map(function (m) { return '<span class="badge ' + (i.activeModes.indexOf(m[0]) >= 0 ? 'b-green' : 'b-grey') + '">' + m[1] + '</span>'; }).join('') + '</div>' +
-            (i.apiKeyMasked ? '<div class="mono">' + esc(i.apiKeyMasked) + '</div>' : '') + (i.webhookUrl ? '<div class="row"><span class="mono grow" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(i.webhookUrl) + '</span><button class="close" data-act="copy" data-v="' + esc(i.webhookUrl) + '">' + ic('copy', 14) + '</button></div>' : '') : '') +
-          (i.status === 'failed' ? '<button class="linkbtn" data-act="connectInt" data-v="' + i.provider + '">Re-enter credentials</button>' : '') +
-          (soon ? '' : '<div class="row" style="justify-content:flex-end">' + (i.status === 'connected' ? '<button class="btn btn-ghost btn-sm" data-act="verifyInt" data-v="' + i.provider + '">Verify</button><button class="btn btn-ghost btn-sm" data-act="disconnectInt" data-v="' + i.provider + '">Disconnect</button>' : '<button class="btn btn-primary btn-sm" data-act="connectInt" data-v="' + i.provider + '">Connect</button>') + '</div>') + '</div>';
-      }).join('') + '</div>';
-    }).join('');
+    var MODE = { receive: 'Receives', send: 'Sends', query: 'Reads' };
+    return '<div class="small" style="margin-bottom:8px">Lead sources send new leads into Camplo. CRMs and email tools send what happened next, so Camplo can watch every hand-off. Ad platforms and analytics are read-only. <a href="/docs/webhooks.html" target="_blank" rel="noopener">Webhook reference ↗</a></div>' +
+      groups.map(function (g) {
+        return '<div class="section-label"><span class="label">' + esc(g) + '</span></div><div class="int-grid">' + by[g].map(function (i) {
+          var soon = i.status === 'coming_soon', lg = INT_LOGO[i.provider] || ['?', '#333'];
+          var badge = { connected: '<span class="badge b-green">Connected</span>', not_connected: '<span class="badge b-grey">Not connected</span>', failed: '<span class="badge b-red">Check credentials</span>', coming_soon: '<span class="badge b-grey">Coming soon</span>' }[i.status];
+          var needs = i.fields.filter(function (f) { return f.required; }).map(function (f) { return f.label; });
+          return '<div class="intcard ' + (soon ? 'soon' : '') + '"><div class="spread"><div class="row"><span class="int-logo" style="background:' + lg[1] + '">' + lg[0] + '</span><div class="h3" style="font-size:14px">' + esc(i.name) + '</div></div>' + badge + '</div>' +
+            '<div class="small">' + esc(i.blurb) + '</div>' +
+            '<div class="row wrap">' + i.modes.map(function (m) { return '<span class="badge nodot ' + (i.activeModes.indexOf(m) >= 0 ? 'b-green' : 'b-grey') + '">' + MODE[m] + '</span>'; }).join('') +
+            (i.webhookKinds.indexOf('leads') >= 0 ? '<span class="chip">Lead webhook</span>' : '') + (i.webhookKinds.indexOf('lifecycle') >= 0 ? '<span class="chip">Lifecycle webhook</span>' : '') + '</div>' +
+            (!soon && i.status !== 'connected' && needs.length ? '<div class="ts">Needs: ' + esc(needs.join(', ')) + '</div>' : '') +
+            (i.status === 'connected' || i.status === 'failed' ? '<button class="linkbtn" style="align-self:flex-start" data-act="intDetails" data-v="' + i.provider + '">Webhook URLs &amp; settings</button>' : '') +
+            (soon ? '' : '<div class="row" style="justify-content:flex-end">' + (i.status === 'connected' || i.status === 'failed'
+              ? '<button class="btn btn-ghost btn-sm" data-act="verifyInt" data-v="' + i.provider + '">Verify</button><button class="btn btn-ghost btn-sm" data-act="connectInt" data-v="' + i.provider + '">Edit</button><button class="btn btn-ghost btn-sm" data-act="disconnectInt" data-v="' + i.provider + '">Disconnect</button>'
+              : '<button class="btn btn-primary btn-sm" data-act="connectInt" data-v="' + i.provider + '">Connect</button>') + '</div>') + '</div>';
+        }).join('') + '</div>';
+      }).join('');
   }
+
   var EVENTS = ['lead.responded', 'lead.assigned', 'lead.received', 'campaign.completed', 'sla.breached', 'deployment.ready'];
   function setWebhooks() {
     var inb = lazy('set:inbound', '/webhooks/inbound?limit=100', list), out = lazy('set:outbound', '/webhooks/outbound?limit=100', list), ints = lazy('set:int', '/integrations?limit=100', list);
@@ -1079,7 +1109,7 @@
       '<div class="card"><div><div class="h3">Outbound webhooks</div><div class="small">Camplo sends events to these URLs — signed with HMAC-SHA256 in X-Camplo-Signature when a secret is set.</div></div><div style="margin-top:12px">' +
       (out.__error ? errBox(out) : out.length ? out.map(function (w) { return '<div class="list-row"><span class="mono grow" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(w.destinationUrl) + '</span><span class="chip">' + esc(w.eventTrigger) + '</span><span class="ts" style="width:110px">' + (w.lastSentAt ? ago(ms(w.lastSentAt)) : 'never sent') + '</span><span class="badge ' + (w.status === 'active' ? 'b-green' : 'b-grey') + '">' + w.status + '</span><button class="close" data-act="deleteOutbound" data-id="' + w.id + '">' + ic('x', 14) + '</button></div>'; }).join('') : '<div class="small">No outbound webhooks yet.</div>') + '</div>' +
       '<div class="row wrap" style="margin-top:12px"><input class="input" id="obUrl" placeholder="https://hooks.example.com/camplo" style="max-width:320px"/><select class="select" id="obEvent" style="width:200px">' + EVENTS.map(function (e) { return '<option>' + e + '</option>'; }).join('') + '</select><input class="input" id="obSecret" placeholder="HMAC secret (optional)" style="width:200px"/><button class="btn btn-primary" data-act="createOutbound">Add Outbound Webhook</button></div></div>' +
-      '<div class="card"><div class="h3">Third-party integration API keys</div>' + (!ints || ints.__error ? '' : (ints.filter(function (i) { return i.apiKeyMasked; }).map(function (i) { return '<div class="list-row"><span class="grow"><b>' + esc(i.name) + '</b></span><span class="mono">' + esc(i.apiKeyMasked) + '</span>' + statusBadge(i.status) + '<button class="btn btn-ghost btn-sm" data-act="connectInt" data-v="' + i.provider + '">Update key</button></div>'; }).join('') || '<div class="small" style="margin-top:8px">No integrations connected yet. <a href="#/settings/integrations">Go to the Integrations tab.</a></div>')) + '</div>' +
+      '<div class="card"><div class="h3">Third-party integration API keys</div>' + (!ints || ints.__error ? '' : (ints.filter(function (i) { return i.status === 'connected' || i.status === 'failed'; }).map(function (i) { var sk = Object.keys(i.secrets || {}); return '<div class="list-row"><span class="grow"><b>' + esc(i.name) + '</b>' + (i.webhooks && i.webhooks.leads ? ' <span class="chip">Lead webhook</span>' : '') + '</span><span class="mono">' + esc(sk.length ? i.secrets[sk[0]] : (i.apiKeyMasked || 'No key needed')) + '</span>' + statusBadge(i.status) + '<button class="btn btn-ghost btn-sm" data-act="connectInt" data-v="' + i.provider + '">Edit</button></div>'; }).join('') || '<div class="small" style="margin-top:8px">No integrations connected yet. <a href="#/settings/integrations">Go to the Integrations tab.</a></div>')) + '</div>' +
       '<div class="card" style="opacity:0.7"><div class="spread"><div class="h3">Camplo API</div><span class="badge b-grey">Coming soon</span></div><div class="small" style="margin-top:6px">Give external tools access to your Camplo data via our API. Your developer can use this to build custom integrations on top of Camplo.</div><button class="btn btn-ghost" disabled style="margin-top:12px;cursor:not-allowed">Generate API Key</button></div></div>';
   }
   function setNotifications() {
@@ -1818,18 +1848,43 @@
         api('/settings/telegram', { method: 'PATCH', body: tb }).then(function (r) { C['set:tg'] = r; }, fail); break;
       case 'disconnectTg': api('/settings/telegram', { method: 'DELETE' }).then(function () { delete C['set:tg']; toast('Telegram disconnected'); render(true); }, fail); break;
       case 'connectInt':
-        var meta = (C['set:int'] || []).filter ? (C['set:int'] || []).filter(function (x) { return x.provider === v; })[0] : null;
-        var needsKey = !meta || meta.methods.indexOf('api_key') >= 0;
-        openOverlay(modal('Connect ' + esc(meta ? meta.name : v), (needsKey ? '<div class="field"><label>API key' + (meta && meta.methods.indexOf('webhook') >= 0 ? ' (optional for webhook-only)' : '') + '</label><input class="input mono" type="password" id="intKey" placeholder="Paste API key"/></div>' : '') +
-          '<p class="small">' + (meta && meta.methods.indexOf('webhook') >= 0 ? 'Camplo will generate a webhook URL for this tool’s events.' : 'The key lets Camplo query this tool on its intelligence schedule.') + ' Keys are encrypted at rest.</p>', '<button class="btn btn-ghost" data-act="close">Cancel</button><button class="btn btn-primary" data-act="doConnect" data-v="' + v + '">Connect</button>'));
+        (C['set:int'] && !C['set:int'].__error ? Promise.resolve(C['set:int']) : api('/integrations?limit=100').then(list)).then(function (ints) {
+          C['set:int'] = ints;
+          var meta = ints.filter(function (x) { return x.provider === v; })[0];
+          if (!meta) return;
+          var editing = meta.status === 'connected' || meta.status === 'failed';
+          var fields = meta.fields.map(function (f) {
+            var stored = f.type === 'secret' ? meta.secrets[f.key] : meta.settings[f.key];
+            return '<div class="field"><label>' + esc(f.label) + (f.required ? ' <span class="red">*</span>' : '') + '</label><input class="input' + (f.type === 'secret' ? ' mono' : '') + '" data-field="' + f.key + '" type="' + (f.type === 'secret' ? 'password' : f.type === 'url' ? 'url' : 'text') + '" autocomplete="off"' +
+              (f.type === 'secret' ? ' placeholder="' + esc(stored ? stored + ' — leave blank to keep' : (f.placeholder || 'Paste value')) + '"' : ' value="' + esc(stored || f.default || '') + '" placeholder="' + esc(f.placeholder || '') + '"') + ' />' + (f.help ? '<div class="ts">' + esc(f.help) + '</div>' : '') + '</div>';
+          }).join('');
+          var camp = meta.webhookKinds.indexOf('leads') >= 0 ? '<div class="field"><label>Leads from ' + esc(meta.name) + ' go to campaign</label><select class="select" id="intCamp"><option value="">No campaign (Lead Inbox only)</option>' +
+            D.campaigns.filter(function (c) { return c.status !== 'COMPLETE'; }).map(function (c) { return '<option value="' + c.id + '"' + (meta.webhooks && meta.webhooks.campaignId === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('') + '</select></div>' : '';
+          openOverlay('<div class="modal" style="width:min(640px,calc(100vw - 32px))"><div class="modal-head"><div class="h2">' + (editing ? 'Edit ' : 'Connect ') + esc(meta.name) + '</div><button class="close" data-act="close">' + ic('x', 18) + '</button></div>' +
+            '<div class="small">' + esc(meta.blurb) + '</div><div class="col gap16" style="margin-top:16px">' + fields + camp +
+            (!fields && !camp ? '<div class="small">No credentials needed — Camplo creates a webhook URL for you.</div>' : '') + '</div><span class="errmsg hidden" id="intErr"></span>' + setupSteps(meta) +
+            '<div class="ts" style="margin-top:12px">Secrets are encrypted at rest and never shown again in full.</div>' +
+            '<div class="modal-foot"><button class="btn btn-ghost" data-act="close">Cancel</button><button class="btn btn-primary" data-act="doConnect" data-v="' + v + '">' + (editing ? 'Save' : 'Connect') + '</button></div></div>');
+        }, fail);
         break;
       case 'doConnect':
-        var kEl = document.getElementById('intKey');
+        var fv = {};
+        document.querySelectorAll('[data-field]').forEach(function (inp) { if (inp.value.trim()) fv[inp.getAttribute('data-field')] = inp.value.trim(); });
+        var cbody = { fields: fv };
+        if (document.getElementById('intCamp')) cbody.campaignId = document.getElementById('intCamp').value || null;
         done = busy(el);
-        api('/integrations/' + v + '/connect', { method: 'POST', body: kEl && kEl.value ? { apiKey: kEl.value } : { method: 'webhook' } }).then(function () { done(); closeOverlay(); toast('Connected'); delete C['set:int']; delete C['sla:crossConfig']; render(true); },
-          function (x) { done(); fail(x); });
+        api('/integrations/' + v + '/connect', { method: 'POST', body: cbody }).then(function (r) {
+          done(); delete C['set:int']; delete C['sla:crossConfig']; render(true);
+          openOverlay('<div class="modal" style="width:min(640px,calc(100vw - 32px))"><div class="modal-head"><div class="h2">' + esc(r.name) + ' connected</div><button class="close" data-act="close">' + ic('x', 18) + '</button></div>' +
+            (r.webhooks && (r.webhooks.leads || r.webhooks.lifecycle) ? '<div class="small">Finish the setup in ' + esc(r.name) + ' with the details below.</div>' + intDetails(r) : '<div class="small">Credentials saved. Press Verify on the card to test them.</div>') + setupSteps(r) +
+            '<div class="modal-foot"><button class="btn btn-primary" data-act="close">Done</button></div></div>');
+        }, function (x) { done(); var ie = document.getElementById('intErr'); if (ie && !x.handled) { ie.textContent = x.message; ie.classList.remove('hidden'); } else fail(x); });
         break;
-      case 'verifyInt': api('/integrations/' + v + '/verify', { method: 'POST' }).then(function (r) { toast(r.ok ? 'Verified' : 'Verification failed', r.ok ? '' : 'error'); delete C['set:int']; render(true); }, fail); break;
+      case 'intDetails':
+        var im = (C['set:int'] || []).filter(function (x) { return x.provider === v; })[0];
+        if (im) openOverlay('<div class="modal" style="width:min(640px,calc(100vw - 32px))"><div class="modal-head"><div class="h2">' + esc(im.name) + '</div><button class="close" data-act="close">' + ic('x', 18) + '</button></div>' + (intDetails(im) || '<div class="small">No webhooks for this tool.</div>') + setupSteps(im) + '<div class="modal-foot"><button class="btn btn-primary" data-act="close">Done</button></div></div>');
+        break;
+      case 'verifyInt': done = busy(el); api('/integrations/' + v + '/verify', { method: 'POST' }).then(function (r) { done(); toast(r.message || (r.ok ? 'Verified' : 'Verification failed'), r.ok ? '' : 'error'); delete C['set:int']; render(true); }, function (x) { done(); fail(x); }); break;
       case 'disconnectInt': if (confirm('Disconnect this integration?')) api('/integrations/' + v, { method: 'DELETE' }).then(function () { toast('Disconnected'); delete C['set:int']; render(true); }, fail); break;
       case 'createInbound':
         var lbl = document.getElementById('ibLabel').value.trim();

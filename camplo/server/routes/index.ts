@@ -274,8 +274,10 @@ const miscRoutes = {
 // ------------------------------------------------------------------ integrations / settings (17)
 const settingsRoutes = {
   integrations: authed.route(r('GET', '/integrations')).input(pageQuery).handler(async ({ input, context }) => paginate(await set.listIntegrations(context), input, { key: (i) => i.provider })),
-  connect: authed.route(r('POST', '/integrations/{provider}/connect')).input(z.object({ provider, apiKey: z.string().max(2000).nullable().optional(), method: z.enum(['webhook', 'api_key', 'oauth']).optional() }))
-    .handler(({ input, context }) => set.connectIntegration(context, input.provider, input)),
+  connect: authed.route(r('POST', '/integrations/{provider}/connect')).input(z.object({
+    provider, apiKey: z.string().max(4000).nullable().optional(), fields: z.record(z.string(), z.string().max(4000).nullable()).optional(),
+    campaignId: z.string().uuid().nullable().optional(), method: z.enum(['webhook', 'api_key', 'oauth']).optional(),
+  })).handler(({ input, context }) => set.connectIntegration(context, input.provider, input)),
   verify: authed.route(r('POST', '/integrations/{provider}/verify')).input(z.object({ provider })).handler(({ input, context }) => set.verifyIntegration(context, input.provider)),
   disconnect: authed.route(r('DELETE', '/integrations/{provider}')).input(z.object({ provider })).handler(({ input, context }) => set.disconnectIntegration(context, input.provider)),
   aiVerify: authed.route(r('POST', '/integrations/ai/verify')).input(z.object({ which: z.enum(['primary', 'fallback']).default('primary') })).handler(({ input, context }) => set.verifyAi(context, input.which)),

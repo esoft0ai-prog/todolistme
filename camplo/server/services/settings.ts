@@ -1,110 +1,177 @@
 /** Integrations, webhooks, AI provider, Telegram and notification settings (Screen 20). */
 import { planLimits, platform } from '../lib/platform.js';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
+import { CATALOG, catalogEntry, type Mode } from './catalog.js';
 import { aiProviderConfigs, inboundWebhooks, integrations, outboundWebhooks, telegramConnections, tenants } from '../db/schema.js';
 import { fail, assertRole, type AuthedContext, assertPerm } from '../lib/orpc.js';
 import { config } from '../lib/config.js';
 import { decrypt, encrypt, mask, randomToken } from '../lib/crypto.js';
 import { verifyBot } from '../lib/telegram.js';
-import { PLAN_LIMITS } from '../domain/rules.js';
 import { verifyProvider } from '../ai/router.js';
 import { logWorkspace } from './effects.js';
 import { campaigns } from '../db/schema.js';
 
 type Provider = (typeof integrations.$inferSelect)['provider'];
-type Mode = 'receive' | 'send' | 'query';
+export { CATALOG };
 
-/** Integration catalog (Design Spec §13 Integrations tab + PRD §11). */
-export const CATALOG: Array<{ provider: Provider; name: string; category: string; methods: Array<'webhook' | 'api_key' | 'oauth'>; modes: Mode[]; comingSoon?: boolean; blurb?: string }> = [
-  { provider: 'systeme_io', name: 'Systeme.io', category: 'Lead sources', methods: ['webhook', 'api_key'], modes: ['receive', 'query'] },
-  { provider: 'gohighlevel', name: 'GoHighLevel', category: 'Lead sources', methods: ['webhook', 'api_key'], modes: ['receive', 'send', 'query'] },
-  { provider: 'tally', name: 'Tally', category: 'Lead sources', methods: ['webhook'], modes: ['receive'] },
-  { provider: 'typeform', name: 'Typeform', category: 'Lead sources', methods: ['webhook'], modes: ['receive'] },
-  { provider: 'custom', name: 'Custom', category: 'Lead sources', methods: ['webhook', 'api_key'], modes: ['receive', 'send'] },
-  { provider: 'instantly', name: 'Instantly', category: 'Cold outreach (warm replies)', methods: ['webhook'], modes: ['receive'], blurb: 'Receive warm replies from your Instantly campaigns as Camplo leads. Camplo\'s accountability layer begins the moment a prospect responds.' },
-  { provider: 'apollo', name: 'Apollo', category: 'Cold outreach (warm replies)', methods: ['webhook'], modes: ['receive'], blurb: 'Receive warm replies from your Apollo campaigns as Camplo leads. Camplo\'s accountability layer begins the moment a prospect responds.' },
-  { provider: 'lemlist', name: 'Lemlist', category: 'Cold outreach (warm replies)', methods: ['webhook'], modes: ['receive'], blurb: 'Receive warm replies from your Lemlist campaigns as Camplo leads.' },
-  { provider: 'smartlead', name: 'Smartlead', category: 'Cold outreach (warm replies)', methods: ['webhook'], modes: ['receive'], blurb: 'Receive warm replies from your Smartlead campaigns as Camplo leads.' },
-  { provider: 'twenty_crm', name: 'Twenty CRM', category: 'CRM', methods: ['webhook', 'api_key'], modes: ['receive', 'send', 'query'] },
-  { provider: 'hubspot', name: 'HubSpot', category: 'CRM', methods: ['oauth'], modes: ['receive', 'query'], comingSoon: true },
-  { provider: 'salesforce', name: 'Salesforce', category: 'CRM', methods: ['oauth'], modes: ['receive', 'query'], comingSoon: true },
-  { provider: 'umami', name: 'Umami', category: 'Analytics', methods: ['api_key'], modes: ['query'] },
-  { provider: 'activecampaign', name: 'ActiveCampaign', category: 'Email platform', methods: ['api_key'], modes: ['query'] },
-  { provider: 'mailchimp', name: 'Mailchimp', category: 'Email platform', methods: ['api_key'], modes: ['query'] },
-  { provider: 'brevo', name: 'Brevo', category: 'Email platform', methods: ['api_key'], modes: ['query'] },
-  { provider: 'notifuse', name: 'Notifuse', category: 'Email platform', methods: ['api_key'], modes: ['query'] },
-  { provider: 'meta_ads', name: 'Meta Ads', category: 'Ad platforms', methods: ['api_key'], modes: ['query'] },
-  { provider: 'google_ads', name: 'Google Ads', category: 'Ad platforms', methods: ['api_key'], modes: ['query'] },
-  { provider: 'slack', name: 'Slack', category: 'Team communication', methods: ['oauth'], modes: ['query'], comingSoon: true },
-  { provider: 'zapier', name: 'Zapier', category: 'Automation', methods: ['webhook'], modes: ['receive', 'send'] },
-  { provider: 'make', name: 'Make', category: 'Automation', methods: ['webhook'], modes: ['receive', 'send'] },
-];
+type Row = typeof integrations.$inferSelect;
+const readSecrets = (r: Row | undefined): Record<string, string> => {
+  if (!r?.secretsEncrypted) return r?.apiKeyEncrypted ? { apiKey: decrypt(r.apiKeyEncrypted) } : {};
+  try { return JSON.parse(decrypt(r.secretsEncrypted)) as Record<string, string>; } catch { return {}; }
+};
+const leadsUrl = (id: string, secret: string) => `${config.appUrl}/api/v1/hooks/${id}?token=${encodeURIComponent(secret)}`;
 
+/** Catalog + this workspace's state: settings, masked secrets, webhook URLs and setup steps. */
 export async function listIntegrations(ctx: AuthedContext) {
+  assertPerm(ctx, 'integrations.manage');
   const rows = await ctx.db.select().from(integrations).where(eq(integrations.tenantId, ctx.tenantId));
+  const hookIds = rows.map((r) => r.config?.inboundWebhookId).filter(Boolean) as string[];
+  const hooks = hookIds.length ? await ctx.db.select().from(inboundWebhooks).where(and(eq(inboundWebhooks.tenantId, ctx.tenantId), inArray(inboundWebhooks.id, hookIds))) : [];
   return CATALOG.map((c) => {
     const r = rows.find((x) => x.provider === c.provider);
+    const sec = readSecrets(r);
+    const hook = hooks.find((h) => h.id === r?.config?.inboundWebhookId);
+    const hookSecret = hook ? decrypt(hook.secretEncrypted) : null;
+    const connected = !c.comingSoon && r?.status === 'connected';
     return {
-      ...c, id: r?.id ?? null,
+      provider: c.provider, name: c.name, category: c.category, blurb: c.blurb, methods: c.methods, modes: c.modes, fields: c.fields,
+      webhookKinds: c.webhooks, signing: c.signing ?? null, setup: c.setup, docsUrl: c.docsUrl ?? null, comingSoon: !!c.comingSoon,
+      id: r?.id ?? null,
       status: c.comingSoon ? 'coming_soon' : r?.status ?? 'not_connected',
       connectionMethod: r?.connectionMethod ?? null, activeModes: r?.activeModes ?? [],
-      apiKeyMasked: r?.apiKeyEncrypted ? mask(decrypt(r.apiKeyEncrypted)) : null,
-      webhookUrl: r?.webhookUrl ?? null, lastVerifiedAt: r?.lastVerifiedAt ?? null,
+      settings: Object.fromEntries(c.fields.filter((f) => f.type !== 'secret').map((f) => [f.key, r?.config?.[f.key] ?? null])),
+      secrets: Object.fromEntries(c.fields.filter((f) => f.type === 'secret').map((f) => [f.key, sec[f.key] ? mask(sec[f.key]) : null])),
+      apiKeyMasked: sec.apiKey ? mask(sec.apiKey) : null,
+      webhooks: connected ? {
+        leads: hook && hookSecret ? leadsUrl(hook.id, hookSecret) : null,
+        leadsBase: hook ? `${config.appUrl}/api/v1/hooks/${hook.id}` : null,
+        signingSecret: hook && (c.signing === 'tally' || c.signing === 'typeform' || c.signing === 'camplo') ? hookSecret : null,
+        lifecycle: c.webhooks.includes('lifecycle') ? r?.webhookUrl ?? null : null,
+        campaignId: hook?.campaignId ?? null, lastReceivedAt: hook?.lastReceivedAt ?? null,
+      } : null,
+      lastVerifiedAt: r?.lastVerifiedAt ?? null,
     };
   });
 }
 
-export async function connectIntegration(ctx: AuthedContext, provider: Provider, input: { apiKey?: string | null; method?: 'webhook' | 'api_key' | 'oauth' }) {
+export async function connectIntegration(ctx: AuthedContext, provider: Provider, input: { fields?: Record<string, string | null>; campaignId?: string | null; apiKey?: string | null }) {
   assertPerm(ctx, 'integrations.manage');
-  const cat = CATALOG.find((c) => c.provider === provider);
+  const cat = catalogEntry(provider);
   if (!cat) throw fail.notFound('Unknown integration.');
   if (cat.comingSoon) throw fail.bad(`${cat.name} is coming soon.`);
   const [existing] = await ctx.db.select().from(integrations).where(and(eq(integrations.tenantId, ctx.tenantId), eq(integrations.provider, provider)));
-  if (!existing || existing.status !== 'connected') {
-    const toolCats = ['CRM', 'Email platform', 'Ad platforms', 'Team communication', 'Analytics'];
-    if (toolCats.includes(cat.category)) {
-      const [{ n }] = await ctx.db.select({ n: sql<number>`count(*)` }).from(integrations)
-        .where(and(eq(integrations.tenantId, ctx.tenantId), eq(integrations.status, 'connected'), sql`${integrations.provider} in ('twenty_crm','gohighlevel','hubspot','salesforce','activecampaign','mailchimp','brevo','notifuse','meta_ads','google_ads','slack','umami')`));
-      if (Number(n) >= (await planLimits(ctx.plan, ctx.db)).connectedTools) {
-        throw fail.planLimit(ctx.plan === 'starter' ? 'Connected tools are available on Growth.' : 'Growth includes one connected tool. Upgrade to Watchtower for unlimited tools.', ctx.plan === 'starter' ? 'growth' : 'watchtower');
-      }
+  if (cat.isTool && (!existing || existing.status !== 'connected')) {
+    const toolProviders = CATALOG.filter((c) => c.isTool).map((c) => c.provider);
+    const [{ n }] = await ctx.db.select({ n: sql<number>`count(*)` }).from(integrations)
+      .where(and(eq(integrations.tenantId, ctx.tenantId), eq(integrations.status, 'connected'), inArray(integrations.provider, toolProviders)));
+    if (Number(n) >= (await planLimits(ctx.plan, ctx.db)).connectedTools) {
+      throw fail.planLimit(ctx.plan === 'starter' ? 'Connected tools are available on Growth.' : 'Growth includes one connected tool. Upgrade to Watchtower for unlimited tools.', ctx.plan === 'starter' ? 'growth' : 'watchtower');
     }
   }
-  const method = input.method ?? (input.apiKey ? 'api_key' : cat.methods[0]);
-  if (method === 'api_key' && !input.apiKey?.trim()) throw fail.bad('Enter an API key.');
-  const webhookUrl = cat.methods.includes('webhook') ? existing?.webhookUrl ?? `${config.appUrl}/api/v1/lifecycle/{id}/${randomToken(18)}` : null;
-  const activeModes: Mode[] = cat.modes.filter((m) => (m === 'receive' ? cat.methods.includes('webhook') : m === 'query' ? !!input.apiKey || !!existing?.apiKeyEncrypted : true));
+  // Merge submitted fields over what is stored; blank keeps the stored value.
+  const given: Record<string, string> = {};
+  for (const [k, v] of Object.entries({ ...(input.apiKey ? { apiKey: input.apiKey } : {}), ...(input.fields ?? {}) })) if (typeof v === 'string' && v.trim()) given[k] = v.trim();
+  const secrets = { ...readSecrets(existing) };
+  const settingsCfg: Record<string, string> = { ...(existing?.config ?? {}) };
+  for (const f of cat.fields) {
+    const v = given[f.key];
+    if (v !== undefined) {
+      if (f.type === 'url' && !/^https?:\/\/[^\s]+$/.test(v)) throw fail.bad(`${f.label} must be a full URL starting with https://`);
+      if (f.type === 'secret') secrets[f.key] = v; else settingsCfg[f.key] = v.replace(/\/+$/, '');
+    } else if (f.default && !settingsCfg[f.key] && f.type !== 'secret') settingsCfg[f.key] = f.default;
+    const have = f.type === 'secret' ? secrets[f.key] : settingsCfg[f.key];
+    if (f.required && !have) throw fail.bad(`${cat.name}: ${f.label} is required.`);
+  }
+  if (provider === 'gohighlevel' && secrets.apiKey && !settingsCfg.locationId) throw fail.bad('GoHighLevel: add the Location ID to use the API token.');
+  if (provider === 'mailchimp' && secrets.apiKey && !/-[a-z]+\d+$/.test(secrets.apiKey)) throw fail.bad('Mailchimp: the API key should end with your data centre, e.g. -us21.');
+  if (input.campaignId) {
+    const [c] = await ctx.db.select({ id: campaigns.id }).from(campaigns).where(and(eq(campaigns.tenantId, ctx.tenantId), eq(campaigns.id, input.campaignId)));
+    if (!c) throw fail.bad('Campaign not found.');
+  }
+  // Lead webhook (a named inbound webhook) for lead-source tools.
+  if (cat.webhooks.includes('leads')) {
+    const hookId = settingsCfg.inboundWebhookId;
+    const [hook] = hookId ? await ctx.db.select().from(inboundWebhooks).where(and(eq(inboundWebhooks.tenantId, ctx.tenantId), eq(inboundWebhooks.id, hookId))) : [];
+    if (hook) {
+      await ctx.db.update(inboundWebhooks).set({ status: 'active', ...(input.campaignId !== undefined ? { campaignId: input.campaignId } : {}) }).where(eq(inboundWebhooks.id, hook.id));
+    } else {
+      const [h] = await ctx.db.insert(inboundWebhooks).values({ tenantId: ctx.tenantId, sourceLabel: cat.name, url: 'pending', secretEncrypted: encrypt(randomToken(24), 'webhook'), campaignId: input.campaignId ?? null }).returning();
+      await ctx.db.update(inboundWebhooks).set({ url: `${config.appUrl}/api/v1/hooks/${h.id}` }).where(eq(inboundWebhooks.id, h.id));
+      settingsCfg.inboundWebhookId = h.id;
+    }
+  }
+  const hasSecret = Object.keys(secrets).length > 0;
+  const method = hasSecret ? 'api_key' : cat.methods.includes('webhook') ? 'webhook' : cat.methods[0];
+  const activeModes: Mode[] = cat.modes.filter((m) => (m === 'receive' ? cat.webhooks.length > 0 : m === 'query' ? hasSecret : true));
   const values = {
     tenantId: ctx.tenantId, provider, connectionMethod: method,
-    apiKeyEncrypted: input.apiKey ? encrypt(input.apiKey.trim(), 'integration') : existing?.apiKeyEncrypted ?? null,
-    status: 'connected' as const, activeModes, lastVerifiedAt: new Date(), updatedAt: new Date(),
+    apiKeyEncrypted: secrets.apiKey ? encrypt(secrets.apiKey, 'integration') : null,
+    secretsEncrypted: hasSecret ? encrypt(JSON.stringify(secrets), 'integration') : null,
+    config: settingsCfg, status: 'connected' as const, activeModes, updatedAt: new Date(),
   };
   const [row] = existing
     ? await ctx.db.update(integrations).set(values).where(eq(integrations.id, existing.id)).returning()
     : await ctx.db.insert(integrations).values({ ...values, webhookUrl: null }).returning();
-  if (webhookUrl) await ctx.db.update(integrations).set({ webhookUrl: webhookUrl.replace('{id}', row.id) }).where(eq(integrations.id, row.id));
-  await logWorkspace(ctx.db, ctx.tenantId, ctx.user.id, `Integration connected: ${cat.name}`);
+  if (cat.webhooks.includes('lifecycle') && !row.webhookUrl) {
+    await ctx.db.update(integrations).set({ webhookUrl: `${config.appUrl}/api/v1/lifecycle/${row.id}/${randomToken(18)}` }).where(eq(integrations.id, row.id));
+  }
+  await logWorkspace(ctx.db, ctx.tenantId, ctx.user.id, `Integration ${existing?.status === 'connected' ? 'updated' : 'connected'}: ${cat.name}`);
   return (await listIntegrations(ctx)).find((i) => i.provider === provider);
 }
 
-/** Credential check. Provider-specific probes run where an unauthenticated-safe endpoint exists. */
+/** Credential check against each provider's API (read-only calls). */
 export async function verifyIntegration(ctx: AuthedContext, provider: Provider) {
+  assertPerm(ctx, 'integrations.manage');
   const [r] = await ctx.db.select().from(integrations).where(and(eq(integrations.tenantId, ctx.tenantId), eq(integrations.provider, provider)));
   if (!r) throw fail.notFound('Integration not connected.');
-  let ok = r.connectionMethod !== 'api_key' || !!r.apiKeyEncrypted;
-  if (ok && r.apiKeyEncrypted && provider === 'brevo') {
-    const res = await fetch('https://api.brevo.com/v3/account', { headers: { 'api-key': decrypt(r.apiKeyEncrypted) }, signal: AbortSignal.timeout(8000) }).catch(() => null);
-    ok = !!res?.ok;
+  const res = await probe(provider, r.config ?? {}, readSecrets(r));
+  await ctx.db.update(integrations).set({ status: res.ok ? 'connected' : 'failed', lastVerifiedAt: new Date() }).where(eq(integrations.id, r.id));
+  return { ok: res.ok, status: res.ok ? 'connected' : 'failed', message: res.message };
+}
+
+async function probe(provider: Provider, cfg: Record<string, string>, sec: Record<string, string>): Promise<{ ok: boolean; message: string }> {
+  const get = async (url: string, headers: Record<string, string> = {}, init: RequestInit = {}) => {
+    try {
+      const res = await fetch(url, { ...init, headers: { Accept: 'application/json', ...headers, ...(init.headers as Record<string, string> | undefined) }, signal: AbortSignal.timeout(10_000) });
+      return res.ok ? { ok: true, message: 'Credentials accepted.' } : { ok: false, message: `The provider answered ${res.status}. Check the values and try again.` };
+    } catch (e) {
+      return { ok: false, message: `Could not reach the provider (${(e as Error).message}).` };
+    }
+  };
+  switch (provider) {
+    case 'brevo': return get('https://api.brevo.com/v3/account', { 'api-key': sec.apiKey });
+    case 'activecampaign': return get(`${cfg.baseUrl}/api/3/users/me`, { 'Api-Token': sec.apiKey });
+    case 'mailchimp': {
+      const dc = sec.apiKey?.split('-').pop();
+      return get(`https://${dc}.api.mailchimp.com/3.0/lists/${encodeURIComponent(cfg.audienceId ?? '')}`, { Authorization: `Basic ${Buffer.from(`camplo:${sec.apiKey}`).toString('base64')}` });
+    }
+    case 'umami': return get(`${cfg.baseUrl}/websites/${encodeURIComponent(cfg.websiteId)}`, { 'x-umami-api-key': sec.apiKey, Authorization: `Bearer ${sec.apiKey}` });
+    case 'meta_ads': return get(`https://graph.facebook.com/v21.0/${encodeURIComponent(cfg.adAccountId)}?fields=name&access_token=${encodeURIComponent(sec.accessToken)}`);
+    case 'twenty_crm': return get(`${cfg.baseUrl}/rest/people?limit=1`, { Authorization: `Bearer ${sec.apiKey}` });
+    case 'notifuse': return get(`${cfg.baseUrl}/api/workspaces.get?id=${encodeURIComponent(cfg.workspaceId)}`, { Authorization: `Bearer ${sec.apiKey}` });
+    case 'systeme_io': return sec.apiKey ? get('https://api.systeme.io/api/contacts?limit=10', { 'X-API-Key': sec.apiKey }) : { ok: true, message: 'Webhook connection — send a test submission to confirm.' };
+    case 'gohighlevel': return sec.apiKey ? get(`https://services.leadconnectorhq.com/locations/${encodeURIComponent(cfg.locationId)}`, { Authorization: `Bearer ${sec.apiKey}`, Version: '2021-07-28' }) : { ok: true, message: 'Webhook connection — send a test contact to confirm.' };
+    case 'google_ads': {
+      try {
+        const res = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ client_id: cfg.clientId, client_secret: sec.clientSecret, refresh_token: sec.refreshToken, grant_type: 'refresh_token' }), signal: AbortSignal.timeout(10_000),
+        });
+        return res.ok ? { ok: true, message: 'OAuth credentials accepted.' } : { ok: false, message: `Google rejected the OAuth credentials (${res.status}).` };
+      } catch (e) { return { ok: false, message: `Could not reach Google (${(e as Error).message}).` }; }
+    }
+    default: return { ok: true, message: 'Webhook connection — send a test event to confirm it arrives.' };
   }
-  await ctx.db.update(integrations).set({ status: ok ? 'connected' : 'failed', lastVerifiedAt: new Date() }).where(eq(integrations.id, r.id));
-  return { ok, status: ok ? 'connected' : 'failed' };
 }
 
 export async function disconnectIntegration(ctx: AuthedContext, provider: Provider) {
   assertPerm(ctx, 'integrations.manage');
-  await ctx.db.update(integrations).set({ status: 'not_connected', apiKeyEncrypted: null, oauthAccessTokenEncrypted: null, oauthRefreshTokenEncrypted: null, activeModes: [], updatedAt: new Date() })
-    .where(and(eq(integrations.tenantId, ctx.tenantId), eq(integrations.provider, provider)));
-  await logWorkspace(ctx.db, ctx.tenantId, ctx.user.id, `Integration disconnected: ${provider}`);
+  const [r] = await ctx.db.select().from(integrations).where(and(eq(integrations.tenantId, ctx.tenantId), eq(integrations.provider, provider)));
+  if (!r) return { ok: true };
+  await ctx.db.update(integrations).set({ status: 'not_connected', apiKeyEncrypted: null, secretsEncrypted: null, oauthAccessTokenEncrypted: null, oauthRefreshTokenEncrypted: null, activeModes: [], updatedAt: new Date() })
+    .where(eq(integrations.id, r.id));
+  if (r.config?.inboundWebhookId) await ctx.db.update(inboundWebhooks).set({ status: 'inactive' }).where(and(eq(inboundWebhooks.tenantId, ctx.tenantId), eq(inboundWebhooks.id, r.config.inboundWebhookId)));
+  await logWorkspace(ctx.db, ctx.tenantId, ctx.user.id, `Integration disconnected: ${catalogEntry(provider)?.name ?? provider}`);
   return { ok: true };
 }
 
