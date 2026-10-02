@@ -390,6 +390,18 @@
   }
 
   // ================================================================ Dashboard (Screen 1 + Morning Brief)
+  /** The written briefing (BRIEFING / ANOMALIES / URGENCY / NUDGE) from the briefing voice. */
+  function briefText() {
+    var w = lazy('brief:text', '/intelligence/briefing');
+    if (!w) return '<div class="brief-text"><div class="skel" style="height:14px;width:70%"></div></div>';
+    if (w.__error) return '';
+    var li = function (x) { return '<li>' + esc(x) + '</li>'; };
+    return '<div class="brief-text"><p>' + esc(w.briefing) + '</p>' +
+      (w.urgency.length || w.anomalies.length ? '<div class="brief-cols">' +
+        (w.urgency.length ? '<div><div class="label red">Urgent</div><ul>' + w.urgency.map(li).join('') + '</ul></div>' : '') +
+        (w.anomalies.length ? '<div><div class="label amber">Looks off</div><ul>' + w.anomalies.map(li).join('') + '</ul></div>' : '') + '</div>' : '') +
+      (w.nudge ? '<div class="brief-nudge">' + ic('target', 13) + ' <b>Start here:</b> ' + esc(w.nudge) + '</div>' : '') + '</div>';
+  }
   function dashboard() {
     var od = overdueLeads(), b = D.live.brief;
     var h = new Date().getHours(), greet = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
@@ -400,6 +412,7 @@
       '<button class="close brief-close" data-act="dismissBrief" aria-label="Dismiss brief">' + ic('x', 16) + '</button>' +
       '<div class="row gap12"><div class="brain-ico">' + ic('brain', 18) + '</div><div><div class="h1" style="font-size:24px">' + greet + ', ' + esc(D.me.name.split(' ')[0]) + '</div>' +
       '<div class="small">' + new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }) + ' · Camplo has been watching since you left — here is what changed.</div></div></div>' +
+      briefText() +
       '<div class="brief-grid">' +
       '<div><div class="label">What happened yesterday</div><div class="brief-stat"><b>' + b.yesterday.received + '</b><span class="small">leads received</span></div><div class="small" style="margin-top:6px"><span class="green">' + b.yesterday.responded + ' responded</span> · <span class="' + (b.yesterday.slaBreaches ? 'red' : 'green') + '">' + b.yesterday.slaBreaches + ' SLA breaches</span> · ' + b.yesterday.campaignsFlagged + ' campaigns flagged</div></div>' +
       '<div><div class="label">Needs attention today</div><div class="brief-stat"><b class="' + (D.live.overdueCount ? 'red' : 'green') + '">' + D.live.overdueCount + '</b><span class="small">overdue leads</span></div>' +
@@ -1035,7 +1048,15 @@
       (v.fallback.enabled ? providerBlock('fallback', v.fallback, 'Fallback provider') : '') +
       '<div class="card"><div class="h3">Intelligence schedule</div><div class="row wrap" style="margin-top:12px"><span class="small">AI observations refresh every</span><input class="input" type="number" min="5" style="width:90px" id="aiEvery" value="' + v.refreshIntervalMinutes + '" /><span class="small">minutes</span></div>' +
       '<div class="small" style="margin-top:16px">Also refresh when:</div><div class="row wrap gap16" style="margin-top:8px" id="aiTriggers">' + [['sla_breach', 'SLA breach'], ['webhook_silence', 'Webhook silence'], ['lead_batch', 'New lead batch'], ['budget_threshold', 'Budget threshold crossed']].map(function (x) { return '<label class="checkbox"><input type="checkbox" value="' + x[0] + '" ' + (v.eventTriggers.indexOf(x[0]) >= 0 ? 'checked' : '') + '/> ' + x[1] + '</label>'; }).join('') + '</div></div>' +
+      memoryCard(v.memory) +
       '<div class="row" style="justify-content:flex-end"><button class="btn btn-primary" data-act="saveAi">Save</button></div></div>';
+  }
+  function memoryCard(m) {
+    if (!m) return '';
+    return '<div class="card"><div class="spread"><div class="h3">Memory</div><span class="badge ' + (m.engine === 'hindsight' ? 'b-green' : 'b-grey') + '">' + (m.engine === 'hindsight' ? 'Hindsight' : 'Built-in') + '</span></div>' +
+      '<div class="small" style="margin-top:8px">Camplo remembers campaign changes and how they turned out, SLA events, recommendation outcomes, and anything your team tells it to remember in chat ("Remember that…"). It keeps operational facts only — never personal remarks, credentials, or instructions aimed at the assistant.</div>' +
+      '<div class="small" style="margin-top:8px">The thinking behind memory (pulling facts out of conversations and spotting patterns) runs on <b>your AI provider above</b>, falling back to Camplo-provided AI. ' + (m.engine === 'hindsight' ? 'Hindsight by Vectorize stores and searches the memories.' : 'Memories are stored in your workspace database.') + ' ' + m.total + ' memories so far.</div>' +
+      (m.learned.length ? '<div class="label" style="margin-top:14px">Learned from your team</div>' + m.learned.map(function (x) { return '<div class="list-row"><span class="grow small">' + esc(x.text) + '</span><span class="ts">' + ago(ms(x.at)) + '</span></div>'; }).join('') : '') + '</div>';
   }
   function setTelegram() {
     var v = lazy('set:tg', '/settings/telegram');

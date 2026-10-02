@@ -1,8 +1,8 @@
 /** Integrations, webhooks, AI provider, Telegram and notification settings (Screen 20). */
 import { planLimits, platform } from '../lib/platform.js';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { CATALOG, catalogEntry, type Mode } from './catalog.js';
-import { aiProviderConfigs, inboundWebhooks, integrations, outboundWebhooks, telegramConnections, tenants } from '../db/schema.js';
+import { aiProviderConfigs, hindsightRetainLog, inboundWebhooks, integrations, outboundWebhooks, telegramConnections, tenants } from '../db/schema.js';
 import { fail, assertRole, type AuthedContext, assertPerm } from '../lib/orpc.js';
 import { config } from '../lib/config.js';
 import { decrypt, encrypt, mask, randomToken } from '../lib/crypto.js';
@@ -243,7 +243,17 @@ export async function getAiProvider(ctx: AuthedContext) {
     fallback: { enabled: r.fallbackEnabled, provider: r.fallbackProvider, modelName: r.fallbackModelName, apiKeyMasked: r.fallbackApiKeyEncrypted ? mask(decrypt(r.fallbackApiKeyEncrypted)) : null, status: r.fallbackStatus },
     usingFallback: r.usingFallback, refreshIntervalMinutes: r.refreshIntervalMinutes, eventTriggers: r.eventTriggers,
     camploProvidedAi: !!(await platform(ctx.db)).ai.openRouterApiKey, advancedUsage: Math.min(1, usage),
+    memory: await memoryStatus(ctx),
   };
+}
+
+/** What the assistant remembers, and whose model does the remembering. */
+async function memoryStatus(ctx: AuthedContext) {
+  const { config } = await import('../lib/config.js');
+  const rows = await ctx.db.select({ type: hindsightRetainLog.eventType, text: hindsightRetainLog.contentSummary, at: hindsightRetainLog.retainedAt }).from(hindsightRetainLog)
+    .where(and(eq(hindsightRetainLog.tenantId, ctx.tenantId), inArray(hindsightRetainLog.eventType, ['preference', 'chat_fact']))).orderBy(desc(hindsightRetainLog.retainedAt)).limit(10);
+  const [{ n }] = await ctx.db.select({ n: sql<number>`count(*)::int` }).from(hindsightRetainLog).where(eq(hindsightRetainLog.tenantId, ctx.tenantId));
+  return { engine: config.hindsightApiUrl ? 'hindsight' : 'built_in', total: Number(n), learned: rows };
 }
 
 type AiProv = NonNullable<(typeof aiProviderConfigs.$inferSelect)['primaryProvider']>;

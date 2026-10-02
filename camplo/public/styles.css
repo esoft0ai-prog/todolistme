@@ -311,6 +311,12 @@ textarea.input:focus { padding: 9px 11px; }
 .brief-stat { display: flex; align-items: baseline; gap: 8px; margin-top: 6px; }
 .brief-stat b { font: 700 28px/1 var(--f-display); }
 .brief-close { position: absolute; top: 16px; right: 16px; }
+.brief-text { margin-top: 16px; max-width: 980px; font-size: 14px; line-height: 1.6; color: var(--text-secondary); }
+.brief-text p { margin: 0; color: var(--text-primary); }
+.brief-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 12px; }
+.brief-cols ul { margin: 6px 0 0; padding-left: 16px; }
+.brief-nudge { margin-top: 12px; display: flex; align-items: center; gap: 6px; color: var(--text-primary); }
+@media (max-width: 760px) { .brief-cols { grid-template-columns: 1fr; } }
 .cc { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 24px; align-items: start; }
 .intel { padding: 24px; position: relative; }
 .intel-head { display: flex; align-items: center; gap: 12px; }

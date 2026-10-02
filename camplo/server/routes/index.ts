@@ -3,6 +3,7 @@
  * oRPC + Zod and served by the OpenAPI handler under /api.
  * Raw endpoints (ingest, SSE, PDF, sites, Polar, Telegram) live in server/app.ts.
  */
+import { getBriefing } from '../services/briefing.js';
 import { z } from 'zod';
 import { authed, pub } from '../lib/orpc.js';
 import * as auth from '../services/auth.js';
@@ -258,6 +259,8 @@ const intelRoutes = {
   chatMessage: authed.route(r('POST', '/chat/message')).input(z.object({ content: z.string().min(1).max(4000), depth: z.enum(['Economy', 'Standard', 'Deep', 'Frontier']).optional() }))
     .handler(({ input, context }) => intel.chatMessage(context, input.content, input.depth)),
   chatSuggestions: authed.route(r('GET', '/chat/suggestions')).handler(({ context }) => intel.chatSuggestions(context)),
+  briefing: authed.route(r('GET', '/intelligence/briefing')).input(z.object({ refresh: z.coerce.boolean().optional() }))
+    .handler(({ input, context }) => getBriefing(context, input.refresh)),
   chatClear: authed.route(r('DELETE', '/chat/history')).handler(({ context }) => intel.clearChat(context)),
 };
 

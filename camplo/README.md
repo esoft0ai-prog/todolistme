@@ -81,7 +81,7 @@ ADL §5 names are primary; the older names in brackets still work.
 | `AUTO_ACTIVATE` | `true` activates self-serve signups immediately (otherwise pending review) |
 | `ALLOW_DIRECT_PLAN_CHANGE` | `true` lets upgrades apply without Polar checkout (demo/testing) |
 | `CRON_SECRET` | Bearer token for `/api/cron` (Vercel Cron sends it automatically) |
-| `HINDSIGHT_API_URL`, `HINDSIGHT_API_KEY` | Hindsight memory (one bank per workspace); relational fallback otherwise |
+| `HINDSIGHT_API_URL`, `HINDSIGHT_API_KEY` | Hindsight memory (one bank per workspace, `chunks` mode). Hindsight needs no LLM key of its own for Camplo: fact extraction and reflection run on each workspace's AI provider (BYOK → fallback → Camplo OpenRouter). Built-in relational memory otherwise |
 
 ## Super Admin console
 

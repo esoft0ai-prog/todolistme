@@ -6,6 +6,7 @@ import { config } from '../lib/config.js';
 import { hasFeature, orderInsights, recommendationLevelAllowed } from '../domain/rules.js';
 import { refreshWorkspace } from '../ai/engine.js';
 import { askAgent, type Depth } from '../ai/agent.js';
+import { learnFromChat } from '../ai/memory.js';
 import { advancedUsage } from '../ai/router.js';
 import { overdueCount } from './leads.js';
 import { remember } from './effects.js';
@@ -121,7 +122,10 @@ export async function chatMessage(ctx: AuthedContext, content: string, depth: De
   const res = await askAgent({
     db: ctx.db, tenantId: ctx.tenantId, plan: ctx.plan, question: text, depth,
     history: prior.reverse().map((m) => ({ role: m.role, content: m.content })),
+    user: { name: ctx.user.name, role: ctx.user.role as 'owner' | 'admin' | 'member', canAssign: ctx.user.role === 'owner' },
   });
+  // Retain after each response: operational facts and stated preferences only (never blocks the reply).
+  if (res.kind === 'work') void learnFromChat(ctx.db, { tenantId: ctx.tenantId, plan: ctx.plan, userName: ctx.user.name, question: text, answer: res.answer, campaignId: res.campaignId }).catch(() => undefined);
   const [msg] = await ctx.db.insert(chatMessages).values({ tenantId: ctx.tenantId, role: 'assistant', content: res.answer, workloadLevel: res.workload }).returning();
   return { id: msg.id, role: 'assistant' as const, content: res.answer, workload: res.workload, investigated: res.investigated, workers: res.workers, createdAt: msg.createdAt };
 }
