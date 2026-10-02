@@ -52,3 +52,19 @@ export async function testPolar(): Promise<{ ok: boolean; error?: string }> {
     return { ok: false, error: (e as Error).message };
   }
 }
+
+/** Switch an existing Polar subscription to another plan's product (Polar prorates and sends subscription.updated). */
+export async function changeSubscriptionPlan(subscriptionId: string, plan: string): Promise<boolean> {
+  const b = (await platform()).billing;
+  const product = b.productIds[plan as keyof typeof b.productIds];
+  if (!b.polarAccessToken || !product) return false;
+  try {
+    const r = await fetch(`${b.polarApiUrl}/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, {
+      method: 'PATCH', headers: { Authorization: `Bearer ${b.polarAccessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ product_id: product }), signal: AbortSignal.timeout(10_000),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}

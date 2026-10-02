@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { campaigns, deployments, domains, leads, pageVisits, tenants, webhookSources } from '../db/schema.js';
-import { fail, assertRole, type AuthedContext } from '../lib/orpc.js';
+import { fail, assertRole, type AuthedContext, assertPerm } from '../lib/orpc.js';
 import { config } from '../lib/config.js';
 import { decrypt, encrypt, hmacHex, randomToken } from '../lib/crypto.js';
 import { contentTypeFor, storageFor } from '../lib/storage.js';
@@ -151,7 +151,7 @@ async function ensureQuota(ctx: AuthedContext, bytes: number) {
 }
 
 export async function uploadPage(ctx: AuthedContext, input: { file: File; name?: string; campaignId?: string | null; slug?: string; entryFile?: string }) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'pages.manage');
   if (!/\.zip$/i.test(input.file.name)) throw fail.unprocessable('Only .zip files can be uploaded.');
   if (input.file.size > config.maxZipSizeMb * 1024 * 1024) throw fail.tooLarge(`File exceeds ${config.maxZipSizeMb}MB limit`);
   const [{ n }] = await ctx.db.select({ n: sql<number>`count(*)` }).from(deployments).where(and(eq(deployments.tenantId, ctx.tenantId), sql`${deployments.status} <> 'deleted'`));
@@ -228,7 +228,7 @@ export async function uploadStatus(ctx: AuthedContext, id: string) {
 }
 
 export async function redeploy(ctx: AuthedContext, id: string, file: File) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'pages.manage');
   const d = await loadPage(ctx, id);
   const x = extractZip(Buffer.from(await file.arrayBuffer()));
   if ('needsInput' in x) return { status: 'needs_input' as const, entry_points: x.needsInput };
@@ -246,7 +246,7 @@ export async function redeploy(ctx: AuthedContext, id: string, file: File) {
 }
 
 export async function rollback(ctx: AuthedContext, id: string) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'pages.manage');
   const d = await loadPage(ctx, id);
   if (!hasRollbackAvailable(d.previousStoragePath, d.previousDeployedAt, new Date(), config.rollbackRetentionDays)) throw fail.bad('No previous version is available.');
   await ctx.db.update(deployments).set({
@@ -257,7 +257,7 @@ export async function rollback(ctx: AuthedContext, id: string) {
 }
 
 export async function patchPage(ctx: AuthedContext, id: string, patch: { name?: string; campaignId?: string | null; slug?: string; vip?: boolean }) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'pages.manage');
   const d = await loadPage(ctx, id);
   const set: Partial<typeof deployments.$inferInsert> = { updatedAt: new Date() };
   if (patch.name) set.name = patch.name.trim();
@@ -278,7 +278,7 @@ export async function patchPage(ctx: AuthedContext, id: string, patch: { name?: 
 }
 
 export async function setServingState(ctx: AuthedContext, id: string, state: 'active' | 'paused' | 'archived') {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'pages.manage');
   const d = await loadPage(ctx, id);
   await ctx.db.update(deployments).set({ servingState: state, updatedAt: new Date() }).where(eq(deployments.id, id));
   if (d.campaignId) await logCampaign(ctx.db, ctx.tenantId, d.campaignId, ctx.user.id, `Page ${d.name} ${state === 'active' ? 'unpaused' : state} by ${ctx.user.name}`);
@@ -287,7 +287,7 @@ export async function setServingState(ctx: AuthedContext, id: string, state: 'ac
 
 /** Leads are retained permanently; they are flagged deployment_deleted. */
 export async function deletePage(ctx: AuthedContext, id: string) {
-  assertRole(ctx, 'owner');
+  assertPerm(ctx, 'pages.delete');
   const d = await loadPage(ctx, id);
   await ctx.db.update(leads).set({ deploymentDeleted: true }).where(and(eq(leads.tenantId, ctx.tenantId), eq(leads.deploymentId, id)));
   await ctx.db.update(deployments).set({ status: 'deleted', updatedAt: new Date() }).where(eq(deployments.id, id));
@@ -324,7 +324,7 @@ export async function listDomains(ctx: AuthedContext) {
 }
 
 export async function addDomain(ctx: AuthedContext, deploymentId: string, domainName: string) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'pages.manage');
   const d = await loadPage(ctx, deploymentId);
   const name = domainName.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
   if (!/^([a-z0-9-]+\.)+[a-z]{2,}$/.test(name)) throw fail.bad('Enter a valid domain like offers.yourbrand.com');
@@ -347,7 +347,7 @@ export async function verifyDomain(ctx: AuthedContext, id: string) {
 }
 
 export async function removeDomain(ctx: AuthedContext, id: string) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'pages.manage');
   await ctx.db.delete(domains).where(and(eq(domains.tenantId, ctx.tenantId), eq(domains.id, id)));
   return { ok: true };
 }

@@ -100,6 +100,7 @@
     var p = m.performance || {};
     return {
       id: m.id, name: m.name, email: m.email, role: m.role.toUpperCase(), initials: m.initials, lastActive: ms(m.lastActiveAt),
+      avatarUrl: m.avatarUrl, permissions: m.permissions || {}, overrides: m.permissionOverrides || {},
       week: p.avgThisWeekMs == null ? null : Math.round(p.avgThisWeekMs / 1000), avg30: p.avg30dMs == null ? null : Math.round(p.avg30dMs / 1000),
       ackRate: p.acknowledgmentRate == null ? null : Math.round(p.acknowledgmentRate * 100), breaches: p.breachesThisWeek || 0,
       fastest: p.fastestThisWeekMs, respondedWeek: p.respondedThisWeek || 0,
@@ -185,13 +186,16 @@
   function healthBadge(h) { return h ? '<span class="badge ' + ({ HEALTHY: 'b-green', WATCH: 'b-amber', CRITICAL: 'b-red' }[h]) + '">' + h + '</span>' : planChip('growth'); }
   /** Campaign status chip: Complete / Paused, else the live Health Pulse. */
   function statusBadge2(c) { return c.status === 'COMPLETE' ? '<span class="badge b-blue">Complete</span>' : c.status === 'PAUSED' ? '<span class="badge b-grey">Paused</span>' : healthBadge(c.health); }
-  function av(id, size) { var u = user(id); return '<span class="avatar ' + (size ? 's' + size : '') + '" title="' + esc(u.name) + '">' + esc(u.initials) + '</span>'; }
+  function avatarInner(u) { return u.avatarUrl ? '<img src="' + esc(u.avatarUrl) + '" alt="" style="width:100%;height:100%;object-fit:cover" />' : esc(u.initials); }
+  function av(id, size) { var u = D && D.me && id === D.me.id ? Object.assign({}, user(id), { avatarUrl: D.me.avatarUrl }) : user(id); return '<span class="avatar ' + (size ? 's' + size : '') + '" title="' + esc(u.name) + '">' + avatarInner(u) + '</span>'; }
   function first(id) { return user(id).name.split(' ')[0]; }
   function isOwner() { return D && D.me.role === 'owner'; }
   function canManage() { return D && D.me.role !== 'member'; }
+  /** Per-teammate permission (owner has all). Server enforces the same rules. */
+  function can(p) { return !!(D && (D.me.role === 'owner' || (D.me.permissions && D.me.permissions[p]))); }
   var RANK = { starter: 0, growth: 1, watchtower: 2, agency: 3 };
   function planOk(min) { return D && RANK[D.plan] >= RANK[min]; }
-  function planChip(p) { return '<span class="chip chip-plan tip" data-tip="Available on ' + cap(p) + ' — upgrade to unlock" data-act="upgrade" data-plan="' + p + '">' + cap(p) + '</span>'; }
+  function planChip(p) { return '<span class="chip chip-plan tip" data-tip="Available on ' + cap(p) + (isOwner() ? ' — upgrade to unlock' : ' — ask your workspace owner') + '" data-act="upgrade" data-plan="' + p + '">' + cap(p) + '</span>'; }
   function cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : ''; }
   function isOverdue(l) { return !l.respondedAt && Date.now() - l.arrived > (l.thr || D.slaMinutes) * MIN; }
   function overdueLeads() { return D.leads.filter(isOverdue).sort(function (a, b) { return a.arrived - b.arrived; }); }
@@ -276,7 +280,7 @@
     else if (top === 'campaigns' && p[2] === 'leads' && p[3]) body = dossier(p[3]);
     else if (top === 'campaigns' && p[1]) body = campaignDetail(p[1], p[2] || 'overview');
     else if (top === 'pages') body = pagesScreen();
-    else if (top === 'sla') { if (q.get('tab')) S.slaTab = q.get('tab') === 'config' ? 'config' : 'live'; body = slaScreen(); }
+    else if (top === 'sla') { if (q.get('tab') === 'config') { location.replace('#/settings/sla'); return ''; } body = slaScreen(); }
     else if (top === 'team-notes') body = teamNotesScreen();
     else if (top === 'me' || top === 'my-performance') body = myPerformance();
     else if (top === 'settings') body = settingsScreen(p[1] || (isOwner() ? 'workspace' : 'team'));
@@ -305,7 +309,7 @@
       (od ? '<div class="mobile-only row"><span class="badge b-red b-bold">' + od + ' overdue</span></div>' : '') +
       '<div class="stl" data-go="sla" title="Workspace Speed-to-Lead"><span class="label">Avg response</span><b class="' + speedClass(sp) + '">' + secs(sp) + '</b></div>' +
       '<button class="iconbtn" data-act="notifs" aria-label="Notifications">' + ic('bell', 18) + (unread ? '<span class="dot-badge">' + unread + '</span>' : '') + '</button>' +
-      '<span class="avatar me" data-act="usermenu">' + esc(D.me.initials) + '</span>' +
+      '<span class="avatar me" data-act="usermenu">' + avatarInner(D.me) + '</span>' +
       '</div></header>';
   }
 
@@ -424,11 +428,11 @@
     var pinned = D.campaigns.filter(function (c) { return c.pinned; });
     var recent = D.campaigns.filter(function (c) { return !c.pinned; });
     var items_ = '<section>' +
-      '<div class="spread" style="margin-bottom:12px"><div class="h2">Campaigns</div><div class="row"><span class="ts">Pinned | ' + pinned.length + ' of 3</span>' + (canManage() ? '<button class="btn btn-ghost btn-sm" data-act="newCampaign">' + ic('plus', 14) + ' New Campaign</button>' : '') + '</div></div>' +
-      (D.campaigns.length ? '' : empty('target', 'No campaigns yet.', 'Create your first campaign to start monitoring.', canManage() ? '<button class="btn btn-primary" data-act="newCampaign">Create Campaign</button>' : '')) +
+      '<div class="spread" style="margin-bottom:12px"><div class="h2">Campaigns</div><div class="row"><span class="ts">Pinned | ' + pinned.length + ' of 3</span>' + (can('campaigns.manage') ? '<button class="btn btn-ghost btn-sm" data-act="newCampaign">' + ic('plus', 14) + ' New Campaign</button>' : '') + '</div></div>' +
+      (D.campaigns.length ? '' : empty('target', 'No campaigns yet.', 'Create your first campaign to start monitoring.', can('campaigns.manage') ? '<button class="btn btn-primary" data-act="newCampaign">Create Campaign</button>' : '')) +
       '<div class="col gap12">' + pinned.map(campaignCard).join('') + '</div>' +
       (recent.length ? '<div class="section-label"><span class="label">Recent campaigns</span></div><div class="col gap12">' + recent.map(campaignCard).join('') + '</div>' : '') +
-      '<div class="card" style="margin-top:16px;padding:16px"><div class="spread"><div class="row"><div class="stack">' + D.team.slice(0, 6).map(function (u) { return av(u.id, 28); }).join('') + '</div><span class="small">' + D.team.length + ' on the team</span></div>' + (canManage() ? '<button class="btn btn-ghost btn-sm" data-act="invite">+ Invite</button>' : '') + '</div></div>' +
+      '<div class="card" style="margin-top:16px;padding:16px"><div class="spread"><div class="row"><div class="stack">' + D.team.slice(0, 6).map(function (u) { return av(u.id, 28); }).join('') + '</div><span class="small">' + D.team.length + ' on the team</span></div>' + (can('team.invite') ? '<button class="btn btn-ghost btn-sm" data-act="invite">+ Invite</button>' : '') + '</div></div>' +
       '</section>';
     return '<div class="page">' + brief + '<div class="cc">' + intel + items_ + '</div></div>';
   }
@@ -437,7 +441,7 @@
     var cls = c.status === 'COMPLETE' ? 'done' : c.health === 'CRITICAL' ? 'crit' : '';
     return '<article class="ccard ' + cls + '" data-go="campaigns/' + c.id + '/overview">' +
       '<div class="spread"><div class="h3">' + esc(c.name) + '</div><div class="row">' + statusBadge2(c) +
-      (canManage() && c.status !== 'COMPLETE' ? '<button class="close tip" data-tip="' + (c.pinned ? 'Unpin' : 'Pin') + '" data-act="pin" data-id="' + c.id + '" data-v="' + (c.pinned ? '0' : '1') + '" style="color:' + (c.pinned ? 'var(--accent-orange)' : 'var(--text-muted)') + '">' + ic('flag', 13) + '</button>' : '') + '</div></div>' +
+      (can('campaigns.manage') && c.status !== 'COMPLETE' ? '<button class="close tip" data-tip="' + (c.pinned ? 'Unpin' : 'Pin') + '" data-act="pin" data-id="' + c.id + '" data-v="' + (c.pinned ? '0' : '1') + '" style="color:' + (c.pinned ? 'var(--accent-orange)' : 'var(--text-muted)') + '">' + ic('flag', 13) + '</button>' : '') + '</div></div>' +
       (c.desc ? '<div class="desc">' + esc(c.desc) + '</div>' : '') +
       '<div class="row wrap gap12"><span class="small">Avg response: <b class="' + speedClass(c.avgResp) + '">' + secs(c.avgResp) + '</b></span>' + (c.cpl != null ? '<span class="ts">CPL: ' + money(c.cpl) + '</span>' : '') + '<span class="ts">' + c.leads + ' leads</span></div>' +
       '<div class="foot"><div class="stack">' + c.members.slice(0, 3).map(function (m) { return av(m, 24); }).join('') + (c.members.length > 3 ? '<span class="avatar s24">+' + (c.members.length - 3) + '</span>' : '') + '</div>' +
@@ -506,7 +510,7 @@
     return '<tr class="' + (od ? 'breached' : '') + '" data-go="leads/' + l.id + '">' +
       '<td><div class="lead-cell"><span class="dot-slot">' + (pulse ? '<span class="dot dot6 o pulse-orange"></span>' : '') + '</span><div><div class="nm">' + esc(l.name) + (l.vip ? ' <span class="chip" style="height:18px;font-size:10px;color:var(--status-amber)">VIP</span>' : '') + '</div><div class="mono" style="color:var(--text-muted)">' + l.displayId + '</div></div></div></td>' +
       (hideCampaign ? '' : '<td class="sec">' + esc(l.campaignName || '—') + '</td>') +
-      '<td>' + assignee + (canManage() && open ? ' <button class="linkbtn" style="font-size:12px;margin-left:6px" data-act="assignPicker" data-id="' + l.id + '">' + (l.assignee ? 'Reassign' : 'Assign') + '</button>' : '') + '</td>' +
+      '<td>' + assignee + (isOwner() && open ? ' <button class="linkbtn" style="font-size:12px;margin-left:6px" data-act="assignPicker" data-id="' + l.id + '">' + (l.assignee ? 'Reassign' : 'Assign') + '</button>' : '') + '</td>' +
       '<td class="ts" data-ago="' + l.arrived + '"></td>' +
       '<td>' + status + '</td>' +
       '<td><button class="lc-btn tip ' + (l.external ? 'ext' : '') + '" data-tip="View Lifecycle" data-act="lifecycle" data-id="' + l.id + '">' + lifeIcon() + '</button></td></tr>';
@@ -521,9 +525,9 @@
     if (c.status === 'COMPLETE' && planOk('watchtower')) tabs.push(['retrospective', 'Retrospective']);
     var head = '<div class="camp-head">' +
       '<div class="crumb"><a href="#/dashboard">' + ic('back', 13) + ' Campaign</a> / ' + esc(user(c.owner).name) + ' <span class="mono" style="color:var(--text-muted);margin-left:8px">camp_' + c.id.slice(0, 8) + '</span></div>' +
-      '<div class="spread wrap" style="margin-top:14px"><div class="row gap12 editable"><h1 class="h1" id="campName">' + esc(c.name) + '</h1>' + (canManage() ? '<button class="close pen" data-act="renameCampaign" data-id="' + c.id + '" aria-label="Edit name">' + ic('pen', 14) + '</button>' : '') + '</div>' +
-      '<div class="row">' + (planOk('growth') ? (canManage() ? '<button class="btn btn-ghost" data-act="share" data-id="' + c.id + '">' + ic('share', 14) + ' Share with client</button>' : '') : planChip('growth')) +
-      (c.status !== 'COMPLETE' && canManage() ? '<button class="btn btn-ghost" data-act="pauseCampaign" data-id="' + c.id + '" data-v="' + (c.status === 'PAUSED' ? 'active' : 'paused') + '">' + (c.status === 'PAUSED' ? 'Resume' : 'Pause') + '</button><button class="btn btn-ghost" data-act="markComplete" data-id="' + c.id + '">Mark Campaign Complete</button>' : '') + '</div></div>' +
+      '<div class="spread wrap" style="margin-top:14px"><div class="row gap12 editable"><h1 class="h1" id="campName">' + esc(c.name) + '</h1>' + (can('campaigns.manage') ? '<button class="close pen" data-act="renameCampaign" data-id="' + c.id + '" aria-label="Edit name">' + ic('pen', 14) + '</button>' : '') + '</div>' +
+      '<div class="row">' + (planOk('growth') ? (can('campaigns.share') ? '<button class="btn btn-ghost" data-act="share" data-id="' + c.id + '">' + ic('share', 14) + ' Share with client</button>' : '') : planChip('growth')) +
+      (c.status !== 'COMPLETE' && can('campaigns.manage') ? '<button class="btn btn-ghost" data-act="pauseCampaign" data-id="' + c.id + '" data-v="' + (c.status === 'PAUSED' ? 'active' : 'paused') + '">' + (c.status === 'PAUSED' ? 'Resume' : 'Pause') + '</button><button class="btn btn-ghost" data-act="markComplete" data-id="' + c.id + '">Mark Campaign Complete</button>' : '') + '</div></div>' +
       '<div class="camp-meta">' + statusBadge2(c) + '<span class="sep"></span>' +
       '<span>Speed-to-lead <b class="' + speedClass(c.avgResp) + '">' + secs(c.avgResp) + '</b></span>' + (c.cpl != null ? '<span class="sep"></span><span>CPL <b class="' + (c.cplThreshold != null && c.cpl > c.cplThreshold ? 'amber' : '') + '">' + money(c.cpl) + '</b></span>' : '') +
       '<span class="sep"></span><span>Started ' + fmtDate(c.start) + '</span><span class="sep"></span><span class="row">' + av(c.owner, 20) + esc(user(c.owner).name) + '</span><span class="sep"></span><span>' + (c.end ? 'Completed ' + fmtDate(c.end) : 'Day ' + c.days) + '</span></div>' +
@@ -537,7 +541,7 @@
     else if (tab === 'meeting') body = meetingTab(c);
     else if (tab === 'logs') body = logsTab(c);
     else if (tab === 'retrospective') body = retroTab(c);
-    else if (tab === 'pages') body = (canManage() ? '<div class="spread" style="margin-bottom:12px"><div class="h2">Pages</div><button class="btn btn-primary" data-act="upload" data-camp="' + c.id + '">' + ic('upload', 15) + ' Upload page</button></div>' : '') + pagesTable(D.pages.filter(function (p) { return p.camp === c.id; }), true);
+    else if (tab === 'pages') body = (can('pages.manage') ? '<div class="spread" style="margin-bottom:12px"><div class="h2">Pages</div><button class="btn btn-primary" data-act="upload" data-camp="' + c.id + '">' + ic('upload', 15) + ' Upload page</button></div>' : '') + pagesTable(D.pages.filter(function (p) { return p.camp === c.id; }), true);
     else if (tab === 'sla') body = campaignSla(c);
     else body = overviewTab(c);
     return head + '<div class="page" style="padding-top:28px">' + body + '</div>';
@@ -552,7 +556,7 @@
 
   function overviewTab(c) {
     var budget = '';
-    var editable = canManage() && c.status !== 'COMPLETE';
+    var editable = can('campaigns.manage') && c.status !== 'COMPLETE';
     if (planOk('growth')) {
       var over = c.cpl != null && c.cplThreshold != null && c.cpl > c.cplThreshold;
       var runway = c.budget != null && c.daily ? Math.floor(c.budget / c.daily) : null;
@@ -573,7 +577,7 @@
       '<div class="editor-bar">' + ['B', 'I', 'U', 'S', 'H', '🔗', '•', '1.', '≡'].map(function (b, i) { var cmds = ['bold', 'italic', 'underline', 'strikeThrough', 'hiliteColor', 'createLink', 'insertUnorderedList', 'insertOrderedList', 'justifyLeft']; return '<button data-cmd="' + cmds[i] + '" title="' + cmds[i] + '">' + b + '</button>'; }).join('') + '</div>' +
       '<div class="editor prose" contenteditable="true" id="ovEditor">' + (c.brief || '') + '</div>' +
       '<div class="row" style="margin-top:12px"><button class="btn btn-primary" data-act="saveOverview" data-id="' + c.id + '">Save</button><button class="btn btn-ghost" data-act="cancelOverview">Cancel</button></div>'
-      : '<div class="editable"><div class="spread"><div class="h3">Campaign brief</div>' + (canManage() ? '<button class="btn btn-ghost btn-sm pen" data-act="editOverview">' + ic('pen', 13) + ' Edit</button>' : '') + '</div>' +
+      : '<div class="editable"><div class="spread"><div class="h3">Campaign brief</div>' + (can('campaigns.manage') ? '<button class="btn btn-ghost btn-sm pen" data-act="editOverview">' + ic('pen', 13) + ' Edit</button>' : '') + '</div>' +
       '<div class="prose" style="margin-top:12px">' + (c.brief ? sanitize(c.brief) : '<p class="muted">No brief yet.</p>') + '</div></div>';
     var ins = sortInsights(D.insights.filter(function (i) { return i.camp === c.id; })).slice(0, 2);
     return '<div class="dossier"><div>' + budget + brief + '</div><aside class="rail">' +
@@ -722,7 +726,7 @@
       '<div class="label" style="margin-top:20px">7-day trend</div>' + trendBars(tr.days, null) + '</div>' +
       '<div class="col gap24"><div class="card"><div class="spread"><div class="label">Overdue now</div><span class="badge b-red">' + od.count + '</span></div>' + (od.count ? list(od).map(overdueRow).join('') : okEmpty()) + '</div>' +
       '<div class="card"><div class="label">Team performance</div>' + tm.map(function (m) { return '<div class="list-row">' + av(m.id, 24) + '<span class="grow">' + esc(m.name) + '</span><span style="width:110px">' + secs(m.avgThisWeekMs == null ? null : m.avgThisWeekMs / 1000) + '</span><span style="width:90px" class="' + (m.breachesThisWeek ? 'red' : 'green') + '">' + m.breachesThisWeek + ' breaches</span></div>'; }).join('') + '</div></div></div>' +
-      '<div style="margin-top:16px"><a href="#/sla?tab=config">Configure SLA settings →</a></div>';
+      '<div style="margin-top:16px"><a href="#/settings/sla">Configure SLA settings →</a></div>';
   }
   function okEmpty() { return '<div class="empty" style="padding:24px"><div class="check-big">' + ic('check', 28) + '</div><div class="h">No overdue leads right now.</div></div>'; }
 
@@ -773,7 +777,7 @@
       '<div class="small" style="line-height:1.6">' + (l.respondedAt ? 'Responded in <b>' + dur(l.respondedAt - l.arrived, true) + '</b>' + (l.respondedAt - l.arrived < 5 * MIN ? ' — inside the 5-minute window where contact rates are highest.' : '. Answers inside five minutes are far more likely to reach a conversation.') :
         'Every minute past 5 lowers the chance of contact. ' + (breaching ? '<b class="red">This lead is past your ' + l.thr + '-minute threshold.</b> ' : '') + (l.vip ? 'This is a <b>VIP page</b> lead.' : '')) + '</div></div>' +
       (c ? '<div class="card"><div class="label">Campaign</div><a class="h3" style="display:block;margin-top:6px;color:var(--text-primary)" href="#/campaigns/' + c.id + '/overview">' + esc(c.name) + '</a><div style="margin-top:8px">' + statusBadge2(c) + '</div></div>' : '') +
-      (canManage() && !l.respondedAt && (isOwner() || !l.assignee) ? '<div class="card"><div class="label" style="margin-bottom:8px">' + (l.assignee ? 'Reassign (owner)' : 'Assign') + '</div><select class="select" data-act-change="reassign" data-id="' + l.id + '"><option value="">Choose team member…</option>' +
+      (isOwner() && !l.respondedAt ? '<div class="card"><div class="label" style="margin-bottom:8px">' + (l.assignee ? 'Reassign (owner)' : 'Assign') + '</div><select class="select" data-act-change="reassign" data-id="' + l.id + '"><option value="">Choose team member…</option>' +
         D.team.filter(function (t) { return t.id !== l.assignee; }).map(function (t) { return '<option value="' + t.id + '">' + esc(t.name) + '</option>'; }).join('') + '</select><div class="ts" style="margin-top:8px">Response timer resets for the new assignee. Customer-waiting timer never resets.</div></div>' : '') +
       '</aside>';
     return '<div class="page"><div class="dossier"><div>' + head + attr + audit + lcHtml + notes + '</div>' + rail + '</div></div>';
@@ -794,15 +798,15 @@
     return '<span class="row" style="gap:8px"><span class="dot ' + m[0] + ' ' + m[1] + '"></span><span style="font-size:12px;color:var(--text-secondary)">' + m[2] + '</span></span>';
   }
   function pagesTable(list, hideCampaign) {
-    if (!list.length) return empty('file', 'No pages hosted yet.', 'Upload your first campaign page to get started.', canManage() ? '<button class="btn btn-primary" data-act="upload">Upload Page</button>' : '');
+    if (!list.length) return empty('file', 'No pages hosted yet.', 'Upload your first campaign page to get started.', can('pages.manage') ? '<button class="btn btn-primary" data-act="upload">Upload Page</button>' : '');
     return list.filter(function (p) { return p.watch72; }).map(function (p) { return '<div class="banner amber" style="margin-bottom:12px"><span class="chip" style="color:var(--status-amber)">72h Watch</span><b>' + esc(p.name) + '</b> — conversion dropped during the early monitoring window. Review page and traffic quality before spending more budget.</div>'; }).join('') +
-      '<div class="table-wrap"><table><thead><tr><th>Page name</th>' + (hideCampaign ? '' : '<th>Campaign</th>') + '<th>Status</th><th>Webhook</th><th>Visits (7d)</th><th>Leads (7d)</th><th>Conversion</th>' + (canManage() ? '<th style="text-align:right">Actions</th>' : '') + '</tr></thead><tbody>' +
+      '<div class="table-wrap"><table><thead><tr><th>Page name</th>' + (hideCampaign ? '' : '<th>Campaign</th>') + '<th>Status</th><th>Webhook</th><th>Visits (7d)</th><th>Leads (7d)</th><th>Conversion</th>' + (can('pages.manage') ? '<th style="text-align:right">Actions</th>' : '') + '</tr></thead><tbody>' +
       list.map(function (p) {
         var st = { ACTIVE: 'b-green', PAUSED: 'b-amber', ARCHIVED: 'b-grey' }[p.status];
         return '<tr data-act="pageDrawer" data-id="' + p.id + '"><td><div class="nm" style="font-weight:600">' + esc(p.name) + (p.vip ? ' <span class="chip" style="height:18px;font-size:10px;color:var(--status-amber)">VIP</span>' : '') + '</div><div class="mono host" style="color:var(--text-muted)" title="' + esc(p.host) + '">' + esc(p.host) + '</div></td>' +
           (hideCampaign ? '' : '<td class="sec">' + esc(p.campName || '—') + '</td>') + '<td><span class="badge ' + st + '">' + p.status + '</span></td><td>' + hookIndicator(p) + '</td><td>' + p.visits.toLocaleString() + '</td><td>' + p.leads + '</td>' +
           '<td class="' + (p.conv == null ? 'muted' : p.above ? 'green' : 'red') + '" style="font-weight:600">' + (p.conv == null ? '—' : (p.conv * 100).toFixed(1) + '%') + '</td>' +
-          (canManage() ? '<td style="text-align:right"><div class="row" style="justify-content:flex-end"><button class="btn btn-ghost btn-sm" data-act="redeploy" data-id="' + p.id + '" title="Upload new version">' + ic('upload', 13) + '</button><button class="btn btn-ghost btn-sm" data-act="serving" data-id="' + p.id + '" data-v="' + (p.status === 'ACTIVE' ? 'pause' : 'unpause') + '">' + (p.status === 'ACTIVE' ? 'Pause' : p.status === 'ARCHIVED' ? 'Restore' : 'Unpause') + '</button><button class="btn btn-ghost btn-sm" data-act="pageMenu" data-id="' + p.id + '">' + ic('more', 14) + '</button></div></td>' : '') + '</tr>';
+          (can('pages.manage') ? '<td style="text-align:right"><div class="row" style="justify-content:flex-end"><button class="btn btn-ghost btn-sm" data-act="redeploy" data-id="' + p.id + '" title="Upload new version">' + ic('upload', 13) + '</button><button class="btn btn-ghost btn-sm" data-act="serving" data-id="' + p.id + '" data-v="' + (p.status === 'ACTIVE' ? 'pause' : 'unpause') + '">' + (p.status === 'ACTIVE' ? 'Pause' : p.status === 'ARCHIVED' ? 'Restore' : 'Unpause') + '</button><button class="btn btn-ghost btn-sm" data-act="pageMenu" data-id="' + p.id + '">' + ic('more', 14) + '</button></div></td>' : '') + '</tr>';
       }).join('') + '</tbody></table></div>';
   }
   function pagesScreen() {
@@ -810,7 +814,7 @@
     var q = (S.pageQuery || '').toLowerCase(), st = S.pageStatus || 'all', cf = S.pageCamp || 'all';
     var items_ = D.pages.filter(function (p) { return (!q || p.name.toLowerCase().indexOf(q) >= 0) && (st === 'all' || p.status === st) && (cf === 'all' || p.camp === cf); });
     return '<div class="page"><div class="page-head"><div><h1 class="h1">Pages</h1><div class="small" style="margin-top:6px">' + D.pages.length + ' pages hosted · ' + active + ' active' + (D.accAvg != null ? ' · account avg conversion ' + (D.accAvg * 100).toFixed(1) + '%' : '') + '</div></div>' +
-      (canManage() ? '<button class="btn btn-primary" data-act="upload">' + ic('upload', 15) + ' Upload a new page</button>' : '') + '</div>' +
+      (can('pages.manage') ? '<button class="btn btn-primary" data-act="upload">' + ic('upload', 15) + ' Upload a new page</button>' : '') + '</div>' +
       '<div class="filters"><input class="input" id="pageSearch" placeholder="Search pages" value="' + esc(S.pageQuery || '') + '" style="width:240px;height:36px" />' +
       '<select class="select" data-pfilter="pageStatus"><option value="all">All statuses</option>' + ['ACTIVE', 'PAUSED', 'ARCHIVED'].map(function (x) { return '<option value="' + x + '"' + (st === x ? ' selected' : '') + '>' + cap(x.toLowerCase()) + '</option>'; }).join('') + '</select>' +
       '<select class="select" data-pfilter="pageCamp"><option value="all">All campaigns</option>' + D.campaigns.map(function (c) { return '<option value="' + c.id + '"' + (cf === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('') + '</select></div>' +
@@ -827,11 +831,11 @@
       '<div class="label" style="margin-top:14px">Webhook URL</div><div class="row"><span class="mono grow" style="word-break:break-all">' + esc(p.webhookUrl) + '</span><button class="close" data-act="copy" data-v="' + esc(p.webhookUrl) + '">' + ic('copy', 14) + '</button></div>' +
       (p.secret ? '<div class="label" style="margin-top:10px">Signing secret (HMAC-SHA256 → X-Camplo-Signature: sha256=…)</div><div class="input-wrap"><input class="input mono" type="password" readonly value="' + esc(p.secret) + '" id="pgsecret" style="font-size:12px"/><span class="acts"><button data-act="eye" data-for="pgsecret">' + ic('eye', 14) + '</button><button data-act="copy" data-v="' + esc(p.secret) + '">' + ic('copy', 14) + '</button></span></div>' : '') + '</div>' +
       '<div class="label" style="margin:24px 0 8px">Leads from this page</div>' + (!ls ? skel(2) : ls.__error ? errBox(ls) : ls.length ? ls.map(function (l) { return '<div class="list-row" data-go="leads/' + l.id + '" style="cursor:pointer"><span class="grow"><b>' + esc(l.name) + '</b> <span class="mono" style="color:var(--text-muted)">' + l.displayId + '</span></span>' + (l.respondedAt ? '<span class="green">Responded</span>' : '<span class="red" data-since="' + l.arrived + '"></span>') + '</div>'; }).join('') : '<div class="small">No leads from this page yet.</div>') +
-      (canManage() ? '<div class="col gap12" style="margin-top:24px">' + (p.rollback ? '<div><button class="btn btn-ghost" data-act="rollback" data-id="' + p.id + '">Rollback to previous version</button><div class="ts" style="margin-top:4px">Version from ' + fmtDate(p.prevAt) + ' · stored for 30 days</div></div>' : '') +
+      (can('pages.manage') ? '<div class="col gap12" style="margin-top:24px">' + (p.rollback ? '<div><button class="btn btn-ghost" data-act="rollback" data-id="' + p.id + '">Rollback to previous version</button><div class="ts" style="margin-top:4px">Version from ' + fmtDate(p.prevAt) + ' · stored for 30 days</div></div>' : '') +
         '<button class="btn btn-ghost" style="align-self:flex-start" data-act="domain" data-id="' + p.id + '">' + (p.domain ? 'Custom domain: ' + esc(p.domain.name) + ' (' + p.domain.status + ')' : 'Connect custom domain') + '</button>' +
         '<label class="checkbox"><input type="checkbox" data-act-change="pageVip" data-id="' + p.id + '" ' + (p.vip ? 'checked' : '') + '/> VIP page (tighter SLA threshold)</label>' +
         '<div class="row" style="gap:8px"><button class="btn btn-ghost" data-act="serving" data-id="' + p.id + '" data-v="' + (p.status === 'ACTIVE' ? 'pause' : 'unpause') + '">' + (p.status === 'ACTIVE' ? 'Pause page' : p.status === 'ARCHIVED' ? 'Restore page' : 'Unpause page') + '</button>' +
-        (isOwner() ? '<button class="btn btn-danger" data-act="deletePage" data-id="' + p.id + '">Delete page</button>' : '') + '</div></div>' : ''));
+        (can('pages.delete') ? '<button class="btn btn-danger" data-act="deletePage" data-id="' + p.id + '">Delete page</button>' : '') + '</div></div>' : ''));
   }
 
   // ================================================================ SLA (Screen 12)
@@ -839,9 +843,9 @@
     return '<div class="list-row"><div class="grow"><a href="#/leads/' + l.id + '" style="color:var(--text-primary);font-weight:600">' + esc(l.name) + '</a>' + (l.vip ? ' <span class="chip" style="height:18px;font-size:10px;color:var(--status-amber)">VIP</span>' : '') + '<div class="ts">' + esc(l.pageName || 'webhook') + ' · ' + esc(l.campaignName || '—') + '</div></div><span class="overdue-t breach" style="font-size:15px" data-since="' + ms(l.receivedAt) + '"></span><span class="row" style="width:140px">' + (l.assigneeId ? av(l.assigneeId, 24) + esc((l.assigneeName || '').split(' ')[0]) : '<span class="muted">Unassigned</span>') + '</span>' + (canManage() ? '<button class="btn btn-primary btn-sm" data-act="notify" data-id="' + l.id + '">Notify Now</button>' : '') + '</div>';
   }
   function slaScreen() {
-    var tabs = '<nav class="settings-tabs"><button class="subtab ' + (S.slaTab === 'live' ? 'active' : '') + '" data-act="slaTab" data-v="live">Live Status</button>' + (canManage() ? '<button class="subtab ' + (S.slaTab === 'config' ? 'active' : '') + '" data-act="slaTab" data-v="config">Configuration</button>' : '') + '</nav>';
+    var tabs = '<nav class="settings-tabs"><button class="subtab ' + (S.slaTab === 'live' ? 'active' : '') + '" data-act="slaTab" data-v="live">Live Status</button>' + (can('sla.manage') ? '<a class="subtab" href="#/settings/sla">Configuration ' + ic('chev', 11) + '</a>' : '') + '</nav>';
     var head = '<div class="page-head"><div><h1 class="h1">SLA</h1><div class="watching">' + ic('brain', 14) + ' Monitoring every handoff from page visit to closed deal</div></div></div>';
-    return '<div class="page">' + head + tabs + (S.slaTab === 'config' && canManage() ? slaConfig() : slaLive()) + '</div>';
+    return '<div class="page">' + head + tabs + slaLive() + '</div>';
   }
   function trendBars(days, sel) {
     var colors = { green: 'var(--status-green)', amber: 'var(--status-amber)', red: 'var(--status-red)', none: 'var(--border-default)' };
@@ -918,14 +922,14 @@
   function teamNotesScreen() {
     if (!planOk('growth')) return '<div class="page"><h1 class="h1">Team Notes</h1><div class="card" style="margin-top:16px"><div class="spread"><div class="small">Address notes to teammates with deadlines and attachments.</div>' + planChip('growth') + '</div></div></div>';
     var items_ = D.teamNotes;
-    var compose = canManage() ? '<aside class="rail"><div class="card"><div class="h3">New team note</div><div class="field" style="margin-top:12px"><label>To</label><div class="col gap4" id="tnTo">' +
+    var compose = can('team_notes.post') ? '<aside class="rail"><div class="card"><div class="h3">New team note</div><div class="field" style="margin-top:12px"><label>To</label><div class="col gap4" id="tnTo">' +
       D.team.filter(function (u) { return u.id !== D.me.id; }).map(function (u) { return '<label class="checkbox"><input type="checkbox" value="' + u.id + '"/> @' + esc(u.name) + '</label>'; }).join('') + '</div></div>' +
       '<div class="field" style="margin-top:12px"><label>Attach to (optional)</label><select class="select" id="tnAttach"><option value="">Standalone</option>' + D.campaigns.map(function (c) { return '<option value="campaign:' + c.id + '">Campaign: ' + esc(c.name) + '</option>'; }).join('') +
       D.leads.filter(function (l) { return !l.respondedAt; }).slice(0, 30).map(function (l) { return '<option value="lead:' + l.id + '">Lead: ' + esc(l.name) + '</option>'; }).join('') + '</select></div>' +
       '<div class="field" style="margin-top:12px"><label>Deadline (optional)</label><input class="input" type="datetime-local" id="tnDue" /></div>' +
       '<textarea class="input" id="tnBody" style="margin-top:12px" placeholder="Write a note… Notes cannot be deleted once posted."></textarea><span class="errmsg hidden" id="tnErr"></span><button class="btn btn-primary btn-full" style="margin-top:12px" data-act="postTeamNote">Post Team Note</button></div></aside>' : '';
     return '<div class="page"><div class="page-head"><div><h1 class="h1">Team Notes</h1><div class="small italic" style="color:var(--text-muted);margin-top:6px">The complete workspace record. Notes cannot be deleted. Editable within 2 hours.</div></div><a class="btn btn-ghost" href="#/me">Notes addressed to me</a></div>' +
-      '<div class="dossier" style="grid-template-columns:' + (compose ? 'minmax(0,1fr) 380px' : '1fr') + '"><div class="col gap12">' + (items_.length ? items_.map(teamNoteCard).join('') : empty('note', 'No team notes yet.', canManage() ? 'Leave the first note for a teammate.' : '')) + '</div>' + compose + '</div></div>';
+      '<div class="dossier" style="grid-template-columns:' + (compose ? 'minmax(0,1fr) 380px' : '1fr') + '"><div class="col gap12">' + (items_.length ? items_.map(teamNoteCard).join('') : empty('note', 'No team notes yet.', can('team_notes.post') ? 'Leave the first note for a teammate.' : '')) + '</div>' + compose + '</div></div>';
   }
   function myPerformance() {
     var me = byId(D.team, D.me.id) || {};
@@ -943,13 +947,51 @@
   }
 
   // ================================================================ Settings (Screen 13 / 20)
+  /** Settings tabs follow the viewer's permissions; the owner sees everything. */
+  function settingsTabs() {
+    return [
+      ['profile', 'Profile', true], ['team', 'Team', true], ['subscription', 'Subscription', isOwner()], ['workspace', 'Workspace', can('workspace.manage')],
+      ['sla', 'SLA', can('sla.manage')], ['ai', 'AI Provider', can('ai.manage')], ['telegram', 'Telegram', can('telegram.manage')],
+      ['integrations', 'Integrations', can('integrations.manage')], ['webhooks', 'Webhooks & API', can('integrations.manage')], ['notifications', 'Notifications', can('notifications.manage')],
+    ].filter(function (t) { return t[2]; });
+  }
   function settingsScreen(tab) {
-    var tabs = [['workspace', 'Workspace'], ['team', 'Team'], ['ai', 'AI Provider'], ['telegram', 'Telegram'], ['integrations', 'Integrations'], ['webhooks', 'Webhooks & API'], ['notifications', 'Notifications']];
-    if (!isOwner()) tabs = tabs.filter(function (t) { return t[0] === 'team'; });
-    var body = { workspace: setWorkspace, team: setTeam, ai: setAI, telegram: setTelegram, integrations: setIntegrations, webhooks: setWebhooks, notifications: setNotifications }[tab] || setTeam;
-    if (!isOwner() && tab !== 'team') body = setTeam;
+    var tabs = settingsTabs();
+    if (!tabs.some(function (t) { return t[0] === tab; })) tab = 'profile';
+    var body = { profile: setProfile, team: setTeam, subscription: setSubscription, workspace: setWorkspace, sla: setSla, ai: setAI, telegram: setTelegram, integrations: setIntegrations, webhooks: setWebhooks, notifications: setNotifications }[tab];
     return '<div class="page"><div class="page-head"><div><h1 class="h1">Settings</h1><div class="small" style="margin-top:6px">' + esc(D.ws.name) + ' · ' + cap(D.plan) + ' plan</div></div></div>' +
       '<nav class="settings-tabs">' + tabs.map(function (t) { return '<a class="subtab ' + (tab === t[0] ? 'active' : '') + '" href="#/settings/' + t[0] + '">' + t[1] + '</a>'; }).join('') + '</nav>' + body() + '</div>';
+  }
+  function setProfile() {
+    var me = D.me;
+    return '<div class="card" style="max-width:720px"><div class="h3">Your profile</div><div class="small" style="margin-top:4px">Your picture appears next to your name everywhere in ' + esc(PF.productName) + ' — leads, notes, team lists.</div>' +
+      '<div class="row gap16" style="margin-top:20px"><span class="avatar s64" style="width:80px;height:80px;font-size:26px">' + avatarInner(me) + '</span><div class="col gap8">' +
+      '<label class="btn btn-ghost" style="cursor:pointer">' + ic('upload', 14) + ' ' + (me.avatarUrl ? 'Change picture' : 'Upload picture') + '<input type="file" accept="image/png,image/jpeg,image/webp" hidden data-act-change="avatar"/></label>' +
+      (me.avatarUrl ? '<button class="btn btn-ghost" data-act="removeAvatar">Remove picture</button>' : '') + '<div class="ts">PNG, JPG or WebP · up to 2 MB</div></div></div>' +
+      '<div class="field" style="margin-top:24px"><label>Name</label><div class="row"><input class="input" id="meName" value="' + esc(me.name) + '" maxlength="255"/><button class="btn btn-primary" data-act="saveMe">Save</button></div></div>' +
+      '<div class="field" style="margin-top:16px"><label>Email</label><input class="input" value="' + esc(me.email) + '" disabled /></div>' +
+      '<div class="setting-row" style="margin-top:16px"><div><b>Light theme</b><div class="small">Switch between dark and light.</div></div><button class="toggle ' + (document.documentElement.getAttribute('data-theme') === 'light' ? 'on' : '') + '" data-act="theme"></button></div>' +
+      '<div class="field" style="margin-top:16px"><label>Role</label><div><span class="badge nodot b-blue">' + me.role.toUpperCase() + '</span></div></div></div>';
+  }
+  function setSla() { return slaConfig(); }
+  function setSubscription() {
+    var v = lazy('set:sub', '/workspace/subscription');
+    if (!v) return skel(3);
+    if (v.__error) return errBox(v);
+    var u = v.usage;
+    var lim = function (n) { return n == null ? 'Unlimited' : n; };
+    return '<div style="max-width:1080px"><div class="card"><div class="spread wrap"><div><div class="label">Current plan</div><div class="h2" style="margin-top:6px">' + cap(v.plan) + ' · ' + money(v.monthlyFee) + '/month</div>' +
+      '<div class="small" style="margin-top:6px">' + (v.managedByPolar ? 'Billed through your payment provider. Plan changes are prorated.' : 'Plan changes apply immediately.') + '</div></div>' +
+      '<div class="row wrap gap16 small"><span>Campaigns <b>' + u.campaigns + '</b></span><span>Pages <b>' + u.deployments + '</b></span><span>Team <b>' + u.members + '</b></span><span>Storage <b>' + (u.storageUsedBytes / 1048576).toFixed(1) + ' MB</b> of ' + (u.storageQuotaBytes / 1073741824).toFixed(0) + ' GB</span></div></div></div>' +
+      '<div class="int-grid" style="margin-top:16px">' + v.plans.map(function (pl) {
+        var current = pl.plan === v.plan, order = ['starter', 'growth', 'watchtower', 'agency'], up = order.indexOf(pl.plan) > order.indexOf(v.plan);
+        var btn = current ? '<span class="badge b-green">Current plan</span>' : !pl.available ? '<span class="badge b-grey">Coming in v2</span>'
+          : pl.blockers.length ? '<button class="btn btn-ghost btn-sm" disabled title="' + esc(pl.blockers.join('; ')) + '">Over this plan\'s limits</button>'
+          : '<button class="btn ' + (up ? 'btn-primary' : 'btn-ghost') + ' btn-sm" data-act="changePlan" data-plan="' + pl.plan + '">' + (up ? 'Upgrade' : 'Downgrade') + ' to ' + cap(pl.plan) + '</button>';
+        return '<div class="intcard" style="' + (current ? 'border-color:var(--accent-orange)' : '') + '"><div class="spread"><div class="h3">' + cap(pl.plan) + '</div><b>' + money(pl.price) + '<span class="ts">/mo</span></b></div>' +
+          '<ul class="small" style="margin:0;padding-left:18px;line-height:1.8"><li>' + lim(pl.limits.campaigns) + ' campaigns</li><li>' + lim(pl.limits.deployments) + ' pages</li><li>' + lim(pl.limits.members) + ' team members</li><li>' + lim(pl.limits.connectedTools) + ' connected tools</li></ul>' +
+          (pl.blockers.length && !current ? '<div class="ts red">Reduce first: ' + esc(pl.blockers.join('; ')) + '</div>' : '') + '<div class="row" style="justify-content:flex-end">' + btn + '</div></div>';
+      }).join('') + '</div></div>';
   }
   function setWorkspace() {
     var used = D.ws.storageUsedBytes, quota = D.ws.storageQuotaBytes;
@@ -959,13 +1001,13 @@
       '<div class="field" style="margin-top:20px"><label>Storage</label><div class="progress"><i style="width:' + Math.min(100, used / quota * 100).toFixed(1) + '%"></i></div><div class="ts">' + (used / 1048576).toFixed(1) + ' MB of ' + (quota / 1073741824).toFixed(0) + ' GB used</div></div></div>';
   }
   function setTeam() {
-    var inv = canManage() ? lazy('set:invites', '/team/invitations?limit=100', list) : [];
-    return '<div class="spread" style="margin-bottom:16px"><div class="h2">Team</div>' + (canManage() ? '<button class="btn btn-primary" data-act="invite">Invite Member</button>' : '') + '</div>' +
-      (D.team.length === 1 ? empty('plus', 'Invite your first team member.', '', canManage() ? '<button class="btn btn-primary" data-act="invite">Invite</button>' : '') : '') +
+    var inv = can('team.invite') ? lazy('set:invites', '/team/invitations?limit=100', list) : [];
+    return '<div class="spread" style="margin-bottom:16px"><div><div class="h2">Team</div>' + (isOwner() ? '<div class="small" style="margin-top:4px">Use Permissions to control what each teammate can change. Only you can assign leads, change plans, roles or remove people.</div>' : '') + '</div>' + (can('team.invite') ? '<button class="btn btn-primary" data-act="invite">Invite Member</button>' : '') + '</div>' +
+      (D.team.length === 1 ? empty('plus', 'Invite your first team member.', '', can('team.invite') ? '<button class="btn btn-primary" data-act="invite">Invite</button>' : '') : '') +
       '<div class="table-wrap">' + D.team.map(function (u) {
         var rb = { OWNER: 'b-grey', ADMIN: 'b-blue', MEMBER: 'b-grey' }[u.role];
         var acts = '';
-        if (u.role !== 'OWNER' && isOwner()) acts = '<button class="linkbtn" data-act="editRole" data-id="' + u.id + '">Edit role</button><button class="linkbtn" style="color:var(--status-red)" data-act="removeMember" data-id="' + u.id + '">Remove</button>';
+        if (u.role !== 'OWNER' && isOwner()) acts = '<button class="linkbtn" data-act="perms" data-id="' + u.id + '">Permissions</button><button class="linkbtn" data-act="editRole" data-id="' + u.id + '">Edit role</button><button class="linkbtn" style="color:var(--status-red)" data-act="removeMember" data-id="' + u.id + '">Remove</button>';
         return '<div class="member-row" data-act="member" data-id="' + u.id + '">' + av(u.id, 40) + '<b>' + esc(u.name) + '</b><span class="sec">' + esc(u.email) + '</span><span class="badge nodot ' + rb + '">' + u.role + '</span><span class="ts" data-ago="' + u.lastActive + '"></span><span class="acts">' + acts + '</span></div>';
       }).join('') + '</div>' +
       (inv && !inv.__error && inv.length ? '<div class="section-label"><span class="label">Pending invitations</span></div><div class="table-wrap">' + inv.map(function (i) {
@@ -1428,6 +1470,10 @@
       }, fail);
     }
     if (act === 'zip' && t.files[0]) uploadZip(t.files[0]);
+    if (act === 'avatar' && t.files[0]) {
+      var afd = new FormData(); afd.append('file', t.files[0]);
+      api('/auth/me/avatar', { method: 'POST', body: afd }).then(function (u) { D.me.avatarUrl = u.avatarUrl; toast('Profile picture updated'); reload(true); }, fail);
+    }
     if (act === 'logo' && t.files[0]) {
       var fd = new FormData(); fd.append('file', t.files[0]);
       api('/workspace/logo', { method: 'POST', body: fd }).then(function () { toast('Logo updated'); reload(true); }, fail);
@@ -1494,7 +1540,9 @@
         var light = document.documentElement.getAttribute('data-theme') !== 'light';
         document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark'); store('camplo-theme', light ? 'light' : 'dark');
         api('/auth/me', { method: 'PATCH', body: { theme: light ? 'light' : 'dark' } }).catch(function () {});
-        var dk = document.querySelector('.dock'); if (dk) dk.outerHTML = dock(); break;
+        var dk = document.querySelector('.dock'); if (dk) dk.outerHTML = dock();
+        if (route().parts[0] === 'settings') render(true);
+        break;
       case 'hideStack': S.stackBannerHidden = true; render(true); break;
       case 'fillDemo': S.demo = true; render(); break;
       case 'chat': openChat(); break;
@@ -1657,7 +1705,7 @@
       case 'pageMenu':
         e.stopPropagation();
         var pg = byId(D.pages, id);
-        popover('<div class="menu-item" data-act="serving" data-id="' + id + '" data-v="archive">Archive</div><div class="menu-item" data-act="domain" data-id="' + id + '">Connect domain</div><div class="menu-item" data-act="movePage" data-id="' + id + '">Move to campaign</div><div class="menu-item" style="' + (pg.rollback ? '' : 'opacity:0.4;pointer-events:none') + '" data-act="rollback" data-id="' + id + '">Rollback</div>' + (isOwner() ? '<div style="height:1px;background:var(--border-subtle);margin:4px 0"></div><div class="menu-item" style="color:var(--status-red)" data-act="deletePage" data-id="' + id + '">Delete…</div>' : ''), el, 200);
+        popover('<div class="menu-item" data-act="serving" data-id="' + id + '" data-v="archive">Archive</div><div class="menu-item" data-act="domain" data-id="' + id + '">Connect domain</div><div class="menu-item" data-act="movePage" data-id="' + id + '">Move to campaign</div><div class="menu-item" style="' + (pg.rollback ? '' : 'opacity:0.4;pointer-events:none') + '" data-act="rollback" data-id="' + id + '">Rollback</div>' + (can('pages.delete') ? '<div style="height:1px;background:var(--border-subtle);margin:4px 0"></div><div class="menu-item" style="color:var(--status-red)" data-act="deletePage" data-id="' + id + '">Delete…</div>' : ''), el, 200);
         break;
       case 'serving':
         closeOverlay();
@@ -1813,13 +1861,52 @@
       case 'readAll': api('/notifications/all/read', { method: 'POST' }).then(function () { closeOverlay(); reload(true); }, fail); break;
       case 'openNotif': closeOverlay(); api('/notifications/' + id + '/read', { method: 'POST' }).then(function () { reload(); }); if (v) go(v.replace(/^\//, '')); break;
       case 'usermenu':
-        popover('<div style="padding:10px 12px;border-bottom:1px solid var(--border-subtle);margin-bottom:4px"><b>' + esc(D.me.name) + '</b><div class="ts">' + esc(D.me.email) + '</div></div>' +
-          '<div class="menu-item" data-go="me">My Performance</div><div class="menu-item" data-go="settings">Settings</div><div class="menu-item" ' + (D.plan !== 'watchtower' ? 'data-act="upgrade" data-plan="' + (D.plan === 'starter' ? 'growth' : 'watchtower') + '"' : '') + '>Current plan: ' + cap(D.plan) + (D.plan !== 'watchtower' ? ' <span class="chip chip-plan" style="margin-left:auto">Upgrade</span>' : '') + '</div><div class="menu-item" data-act="shortcuts">Keyboard shortcuts</div>' +
-          '<div style="height:1px;background:var(--border-subtle);margin:4px 0"></div><div class="menu-item" style="color:var(--status-red)" data-act="logout">Sign out</div>', el, 240);
+        popover('<div class="row gap12" style="padding:10px 12px;border-bottom:1px solid var(--border-subtle);margin-bottom:4px"><span class="avatar s40">' + avatarInner(D.me) + '</span><div><b>' + esc(D.me.name) + '</b><div class="ts">' + esc(D.me.email) + '</div></div></div>' +
+          '<div class="menu-item" data-go="settings/profile">Profile &amp; picture</div><div class="menu-item" data-go="me">My Performance</div><div class="menu-item" data-go="settings">Settings</div>' +
+          (isOwner() ? '<div class="menu-item" data-go="settings/subscription">Subscription: ' + cap(D.plan) + ' <span class="chip chip-plan" style="margin-left:auto">Manage</span></div>' : '<div class="menu-item" style="cursor:default;color:var(--text-muted)">Plan: ' + cap(D.plan) + '</div>') +
+          '<div class="menu-item" data-act="shortcuts">Keyboard shortcuts</div>' +
+          '<div style="height:1px;background:var(--border-subtle);margin:4px 0"></div><div class="menu-item" style="color:var(--status-red)" data-act="logout">Sign out</div>', el, 260);
         break;
       case 'logout': api('/auth/logout', { method: 'POST' }).finally(function () { D = null; C = {}; streams.forEach(function (s) { s.close(); }); closeOverlay(); go('login'); }); break;
       case 'shortcuts': openOverlay(modal('Keyboard shortcuts', '<dl class="kv" style="grid-template-columns:1fr auto"><dt>Search</dt><dd class="mono">⌘ K</dd><dt>Post note / send message</dt><dd class="mono">⌘ Enter</dd><dt>Close panel</dt><dd class="mono">Esc</dd></dl>')); break;
-      case 'upgrade': openOverlay(upgradeModal(el.getAttribute('data-plan'))); break;
+      case 'upgrade':
+        if (!isOwner()) { toast('Only the workspace owner can change the plan. Ask them to upgrade to ' + cap(el.getAttribute('data-plan')) + '.', 'info'); break; }
+        openOverlay(upgradeModal(el.getAttribute('data-plan'))); break;
+      case 'changePlan':
+        var target = el.getAttribute('data-plan');
+        if (!confirm((['starter', 'growth', 'watchtower'].indexOf(target) < ['starter', 'growth', 'watchtower'].indexOf(D.plan) ? 'Downgrade' : 'Upgrade') + ' to ' + cap(target) + ' (' + planPrice(target) + '/month)?')) break;
+        done = busy(el);
+        api('/workspace/upgrade', { method: 'POST', body: { targetPlan: target } }).then(function (r) {
+          if (r.checkoutUrl) { location.href = r.checkoutUrl; return; }
+          toast(r.pending ? 'Plan change sent to your payment provider — it applies in a moment.' : 'Plan changed to ' + cap(target));
+          C = {}; reload(true);
+        }, function (x) { done(); fail(x); });
+        break;
+      case 'perms':
+        var who = byId(D.team, id);
+        api('/team/permissions').then(function (cat) {
+          var base = who.role === 'ADMIN' ? 'admin' : 'member';
+          openOverlay(modal('Permissions — ' + esc(who.name), '<div class="small" style="margin-bottom:12px">Starting point: <b>' + cap(base) + '</b> defaults. Switch anything on or off for ' + esc(who.name.split(' ')[0]) + ' only. Owner-only actions (billing, roles, removing people, assigning leads, deleting campaigns) can\'t be delegated.</div>' +
+            '<div id="permList">' + cat.map(function (p) {
+              var on = who.permissions[p.key], overridden = Object.prototype.hasOwnProperty.call(who.overrides, p.key);
+              return '<div class="setting-row" data-perm="' + p.key + '" data-default="' + (p[base] ? 1 : 0) + '"><div><b>' + esc(p.label) + '</b><div class="small">' + esc(p.hint) + (overridden ? ' · <span class="amber">changed from default</span>' : '') + '</div></div><button class="toggle ' + (on ? 'on' : '') + '" data-act="toggle"></button></div>';
+            }).join('') + '</div>',
+            '<button class="btn btn-ghost" data-act="permsReset" data-id="' + id + '">Reset to ' + cap(base) + ' defaults</button><button class="btn btn-primary" data-act="permsSave" data-id="' + id + '">Save permissions</button>'));
+        }, fail);
+        break;
+      case 'permsSave': case 'permsReset':
+        var changes = {};
+        document.querySelectorAll('#permList [data-perm]').forEach(function (row) {
+          var k = row.getAttribute('data-perm'), on = row.querySelector('.toggle').classList.contains('on'), def = row.getAttribute('data-default') === '1';
+          changes[k] = act === 'permsReset' || on === def ? null : on;
+        });
+        done = busy(el);
+        api('/team/members/' + id + '/permissions', { method: 'PATCH', body: { permissions: changes } }).then(function () { closeOverlay(); toast('Permissions saved'); reload(true); }, function (x) { done(); fail(x); });
+        break;
+      case 'removeAvatar': api('/auth/me/avatar', { method: 'DELETE' }).then(function (u) { D.me.avatarUrl = u.avatarUrl; toast('Picture removed'); reload(true); }, fail); break;
+      case 'saveMe':
+        api('/auth/me', { method: 'PATCH', body: { name: document.getElementById('meName').value.trim() } }).then(function (u) { D.me.name = u.name; toast('Profile saved'); reload(true); }, fail);
+        break;
       case 'doUpgrade':
         done = busy(el);
         api('/workspace/upgrade', { method: 'POST', body: { targetPlan: el.getAttribute('data-plan') } }).then(function (r) {

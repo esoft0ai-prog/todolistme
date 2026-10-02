@@ -1,4 +1,5 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
+import { effectivePermissions } from '../domain/permissions.js';
 import { platform } from '../lib/platform.js';
 import { createCheckout } from '../lib/polar.js';
 import type { DB } from '../db/client.js';
@@ -176,6 +177,7 @@ export function publicUser(u: typeof users.$inferSelect) {
   return {
     id: u.id, name: u.name, email: u.email, role: u.role, theme: u.theme, avatarUrl: u.avatarUrl,
     initials: initials(u.name), lastActiveAt: u.lastActiveAt, joinedAt: u.joinedAt,
+    permissions: effectivePermissions(u.role, u.permissions), permissionOverrides: u.permissions ?? {},
   };
 }
 

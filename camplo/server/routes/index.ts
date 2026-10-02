@@ -16,6 +16,7 @@ import * as set from '../services/settings.js';
 import * as intel from '../services/intelligence.js';
 import * as admin from '../services/admin.js';
 import { queueDepth } from '../jobs/scheduler.js';
+import { PERMISSION_KEYS, PERMISSIONS } from '../domain/permissions.js';
 import { bearer, fail } from '../lib/orpc.js';
 import { describePlatform, platform, publicPlatform, savePlatformSection, SECRETS, SECTIONS } from '../lib/platform.js';
 import { sendTestMail } from '../lib/mailer.js';
@@ -50,6 +51,8 @@ const authRoutes = {
   reset: pub.route(r('POST', '/auth/reset-password')).input(z.object({ token: z.string().min(10), newPassword: z.string().min(8) }))
     .handler(({ input, context }) => auth.resetPassword(context.db, input.token, input.newPassword)),
   me: authed.route(r('GET', '/auth/me')).handler(({ context }) => ({ user: auth.publicUser(context.user), tenant: auth.publicTenant(context.tenant), next: auth.nextRoute(context.tenant) })),
+  avatar: authed.route(r('POST', '/auth/me/avatar')).input(z.object({ file: z.instanceof(File) })).handler(({ input, context }) => ws.uploadAvatar(context, input.file)),
+  removeAvatar: authed.route(r('DELETE', '/auth/me/avatar')).handler(({ context }) => ws.removeAvatar(context)),
   updateMe: authed.route(r('PATCH', '/auth/me')).input(z.object({ name: z.string().min(1).optional(), theme: z.enum(['dark', 'light']).optional() }))
     .handler(({ input, context }) => ws.updateMe(context, input)),
 };
@@ -62,6 +65,7 @@ const workspaceRoutes = {
     stackCheckCompleted: z.boolean().optional(), setupComplete: z.boolean().optional(), notificationEmail: z.string().email().optional(),
   })).handler(({ input, context }) => ws.patchWorkspace(context, input)),
   plan: authed.route(r('GET', '/workspace/plan')).handler(({ context }) => ws.planInfo(context)),
+  subscription: authed.route(r('GET', '/workspace/subscription')).handler(({ context }) => ws.subscription(context)),
   upgrade: authed.route(r('POST', '/workspace/upgrade')).input(z.object({ targetPlan: plan })).handler(({ input, context }) => ws.upgrade(context, input.targetPlan)),
   logo: authed.route(r('POST', '/workspace/logo')).input(z.object({ file: z.instanceof(File) })).handler(({ input, context }) => ws.uploadLogo(context, input.file)),
   removeLogo: authed.route(r('DELETE', '/workspace/logo')).handler(({ context }) => ws.removeLogo(context)),
@@ -70,6 +74,9 @@ const teamRoutes = {
   members: authed.route(r('GET', '/team/members')).input(pageQuery).handler(async ({ input, context }) => paginate(await ws.listMembers(context), input)),
   member: authed.route(r('GET', '/team/members/{id}')).input(idIn).handler(({ input, context }) => ws.getMember(context, input.id)),
   role: authed.route(r('PATCH', '/team/members/{id}/role')).input(z.object({ id, role: z.enum(['admin', 'member']) })).handler(({ input, context }) => ws.changeRole(context, input.id, input.role)),
+  permissions: authed.route(r('PATCH', '/team/members/{id}/permissions')).input(z.object({ id, permissions: z.record(z.string(), z.boolean().nullable()) }))
+    .handler(({ input, context }) => ws.setPermissions(context, input.id, input.permissions)),
+  permissionCatalog: authed.route(r('GET', '/team/permissions')).handler(() => PERMISSION_KEYS.map((k) => ({ key: k, label: PERMISSIONS[k].label, hint: PERMISSIONS[k].hint, admin: PERMISSIONS[k].admin, member: PERMISSIONS[k].member }))),
   remove: authed.route(r('DELETE', '/team/members/{id}')).input(idIn).handler(({ input, context }) => ws.removeMember(context, input.id)),
   invitations: authed.route(r('GET', '/team/invitations')).input(pageQuery).handler(async ({ input, context }) => paginate(await ws.listInvitations(context), input)),
   invite: authed.route(r('POST', '/team/invitations')).input(z.object({ email: z.string().email(), role: z.enum(['admin', 'member']).default('member') }))

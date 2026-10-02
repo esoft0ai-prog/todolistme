@@ -4,7 +4,7 @@ import type { DB } from '../db/client.js';
 import {
   campaigns, crossToolSlaBreaches, crossToolSlaRules, deployments, insights, integrations, leads, tenants, users,
 } from '../db/schema.js';
-import { fail, assertFeature, assertRole, type AuthedContext } from '../lib/orpc.js';
+import { fail, assertFeature, assertRole, type AuthedContext, assertPerm } from '../lib/orpc.js';
 import { config } from '../lib/config.js';
 import { emails, sendMail } from '../lib/mailer.js';
 import { DAY, formatDuration, speedColor } from '../domain/rules.js';
@@ -195,7 +195,7 @@ export async function patchConfig(ctx: AuthedContext, p: {
   sla_threshold_minutes?: number; vip_lead_enabled?: boolean; vip_sla_threshold_minutes?: number; daily_summary_time?: string; vipPages?: string[];
   notificationRules?: Array<{ id: string; notifyEnabled: boolean; notifyChannel: 'email' | 'telegram' | 'both' }>;
 }) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'sla.manage');
   const set: Partial<typeof tenants.$inferInsert> = {};
   if (p.sla_threshold_minutes !== undefined) { if (p.sla_threshold_minutes <= 0) throw fail.bad('Please enter a value greater than 0.'); set.slaThresholdMinutes = Math.round(p.sla_threshold_minutes); }
   if (p.vip_sla_threshold_minutes !== undefined) { if (p.vip_sla_threshold_minutes <= 0) throw fail.bad('Please enter a value greater than 0.'); set.vipSlaThresholdMinutes = Math.round(p.vip_sla_threshold_minutes); }
@@ -256,7 +256,7 @@ export async function crossToolConfig(ctx: AuthedContext) {
 }
 
 export async function patchCrossTool(ctx: AuthedContext, integrationId: string, rules: Array<{ id: string; thresholdValue: number; enabled: boolean; notificationChannels: Array<'ai_panel' | 'email' | 'telegram'> }>) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'sla.manage');
   assertFeature(ctx, 'cross_tool_sla');
   for (const r of rules) {
     if (r.thresholdValue < 0) throw fail.bad('Thresholds cannot be negative.');

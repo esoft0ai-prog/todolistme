@@ -202,7 +202,7 @@ export function createApp() {
       res.send(pdf.data);
     } catch (e) { sendError(res, e); }
   });
-  app.get(/^\/api\/files\/(logos\/.+)$/, wrap(async (req, res, db) => {
+  app.get(/^\/api\/files\/((?:logos|avatars)\/.+)$/, wrap(async (req, res, db) => {
     const f = await (await storageFor(db)).get(req.path.replace(/^\/api\/files\//, ''));
     if (!f) { res.status(404).end(); return; }
     res.setHeader('Content-Type', f.contentType);

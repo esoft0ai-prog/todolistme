@@ -3,6 +3,7 @@
  * tenant fresh from the database (role changes and suspensions apply
  * immediately) and exposes `ctx.tenantId`, which every query must filter on.
  */
+import { hasPermission, PERMISSIONS, type Permission } from '../domain/permissions.js';
 import { os, ORPCError } from '@orpc/server';
 import { and, eq, isNull } from 'drizzle-orm';
 import type { IncomingHttpHeaders } from 'node:http';
@@ -86,6 +87,13 @@ export const requireRole = (...roles: Role[]) => authed.use(async ({ context, ne
 
 export function assertRole(ctx: AuthedContext, ...roles: Role[]) {
   if (!roles.includes(ctx.role)) throw fail.forbidden();
+}
+
+/** Per-teammate permission check (owner always passes). */
+export function assertPerm(ctx: AuthedContext, p: Permission) {
+  if (!hasPermission(ctx.role, ctx.user.permissions, p)) {
+    throw fail.forbidden(`You don't have permission to do this. Ask the workspace owner to turn on "${PERMISSIONS[p].label}" for you.`, 'permission_denied', { permission: p });
+  }
 }
 
 export function assertFeature(ctx: AuthedContext, f: Feature) {

@@ -6,7 +6,7 @@ import type { DB } from '../db/client.js';
 import {
   campaignChanges, campaignLogs, campaignMembers, campaignRetrospectives, campaigns, deployments, insights, leads, pageVisits, tenants, users,
 } from '../db/schema.js';
-import { fail, assertFeature, assertRole, type AuthedContext } from '../lib/orpc.js';
+import { fail, assertFeature, assertRole, type AuthedContext, assertPerm } from '../lib/orpc.js';
 import { config } from '../lib/config.js';
 import { DAY, formatDuration, hasFeature, orderInsights, PLAN_LIMITS, speedColor, type Plan } from '../domain/rules.js';
 import { campaignCpl, campaignStats, health, type CampaignStats } from './metrics.js';
@@ -61,7 +61,7 @@ export async function getCampaign(ctx: AuthedContext, id: string) {
 export async function createCampaign(ctx: AuthedContext, input: {
   name: string; description?: string | null; startDate?: string; budget?: number | null; currency?: string; cplThreshold?: number | null; dailySpend?: number | null;
 }) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'campaigns.manage');
   const [{ n }] = await ctx.db.select({ n: sql<number>`count(*)` }).from(campaigns)
     .where(and(eq(campaigns.tenantId, ctx.tenantId), sql`${campaigns.status} <> 'complete'`));
   const lim = await planLimits(ctx.plan, ctx.db);
@@ -100,7 +100,7 @@ export async function updateCampaign(ctx: AuthedContext, id: string, patch: {
   name?: string; description?: string | null; dailySpend?: number | null; budget?: number | null; cplThreshold?: number | null; startDate?: string;
   status?: 'paused' | 'active'; change?: { type: 'budget' | 'audience' | 'creative' | 'messaging' | 'page'; description: string };
 }) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'campaigns.manage');
   const c = await loadCampaign(ctx, id);
   if (c.status === 'complete' && (patch.dailySpend !== undefined || patch.budget !== undefined)) throw fail.bad('Completed campaigns cannot be changed.');
   const set: Partial<typeof campaigns.$inferInsert> = { updatedAt: new Date() };
@@ -143,6 +143,7 @@ export async function deleteCampaign(ctx: AuthedContext, id: string) {
 }
 
 export async function setPinned(ctx: AuthedContext, id: string, pinned: boolean) {
+  assertPerm(ctx, 'campaigns.manage');
   await loadCampaign(ctx, id);
   if (pinned) {
     const [{ n }] = await ctx.db.select({ n: sql<number>`count(*)` }).from(campaigns).where(and(eq(campaigns.tenantId, ctx.tenantId), eq(campaigns.pinned, true)));
@@ -192,7 +193,7 @@ export async function campaignLogsList(ctx: AuthedContext, id: string, from?: st
 // ------------------------------------------------------------ completion + retrospective
 
 export async function completeCampaign(ctx: AuthedContext, id: string) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'campaigns.manage');
   const c = await loadCampaign(ctx, id);
   if (c.status === 'complete') throw fail.conflict('This campaign is already complete.');
   await ctx.db.update(campaigns).set({ status: 'complete', completedAt: new Date(), pinned: false, updatedAt: new Date() }).where(eq(campaigns.id, id));
@@ -366,7 +367,7 @@ export async function getShareLink(ctx: AuthedContext, id: string) {
 }
 
 export async function createShareLink(ctx: AuthedContext, id: string) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'campaigns.share');
   await loadCampaign(ctx, id);
   assertFeature(ctx, 'client_view');
   const token = randomUUID();
@@ -376,7 +377,7 @@ export async function createShareLink(ctx: AuthedContext, id: string) {
 }
 
 export async function revokeShareLink(ctx: AuthedContext, id: string) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'campaigns.share');
   await loadCampaign(ctx, id);
   await ctx.db.update(campaigns).set({ shareToken: null, shareLinkActive: false }).where(and(eq(campaigns.tenantId, ctx.tenantId), eq(campaigns.id, id)));
   await logCampaign(ctx.db, ctx.tenantId, id, ctx.user.id, `Client share link revoked by ${ctx.user.name}`);

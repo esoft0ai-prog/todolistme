@@ -112,6 +112,8 @@ export const users = pgTable('users', {
   // proposed: per-member notification rules (SLA config → Notification Rules)
   notifyEnabled: boolean('notify_enabled').notNull().default(true),
   notifyChannel: varchar('notify_channel', { length: 20 }).notNull().default('email'),
+  // proposed: per-member permission overrides set by the owner ({ "pages.delete": true, ... }); null = role defaults
+  permissions: jsonb('permissions').$type<Record<string, boolean>>(),
   removedAt: ts('removed_at'),
   createdAt: ts('created_at').notNull().defaultNow(),
 }, (t) => [index('idx_users_tenant').on(t.tenantId), uniqueIndex('idx_users_email_tenant').on(t.email, t.tenantId)]);

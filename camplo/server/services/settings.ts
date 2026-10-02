@@ -2,7 +2,7 @@
 import { planLimits, platform } from '../lib/platform.js';
 import { and, eq, sql } from 'drizzle-orm';
 import { aiProviderConfigs, inboundWebhooks, integrations, outboundWebhooks, telegramConnections, tenants } from '../db/schema.js';
-import { fail, assertRole, type AuthedContext } from '../lib/orpc.js';
+import { fail, assertRole, type AuthedContext, assertPerm } from '../lib/orpc.js';
 import { config } from '../lib/config.js';
 import { decrypt, encrypt, mask, randomToken } from '../lib/crypto.js';
 import { verifyBot } from '../lib/telegram.js';
@@ -55,7 +55,7 @@ export async function listIntegrations(ctx: AuthedContext) {
 }
 
 export async function connectIntegration(ctx: AuthedContext, provider: Provider, input: { apiKey?: string | null; method?: 'webhook' | 'api_key' | 'oauth' }) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'integrations.manage');
   const cat = CATALOG.find((c) => c.provider === provider);
   if (!cat) throw fail.notFound('Unknown integration.');
   if (cat.comingSoon) throw fail.bad(`${cat.name} is coming soon.`);
@@ -101,7 +101,7 @@ export async function verifyIntegration(ctx: AuthedContext, provider: Provider) 
 }
 
 export async function disconnectIntegration(ctx: AuthedContext, provider: Provider) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'integrations.manage');
   await ctx.db.update(integrations).set({ status: 'not_connected', apiKeyEncrypted: null, oauthAccessTokenEncrypted: null, oauthRefreshTokenEncrypted: null, activeModes: [], updatedAt: new Date() })
     .where(and(eq(integrations.tenantId, ctx.tenantId), eq(integrations.provider, provider)));
   await logWorkspace(ctx.db, ctx.tenantId, ctx.user.id, `Integration disconnected: ${provider}`);
@@ -118,7 +118,7 @@ export async function listInbound(ctx: AuthedContext) {
 }
 
 export async function createInbound(ctx: AuthedContext, sourceLabel: string, campaignId?: string | null) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'integrations.manage');
   const secret = randomToken(24);
   const [w] = await ctx.db.insert(inboundWebhooks).values({ tenantId: ctx.tenantId, sourceLabel: sourceLabel.trim(), url: 'pending', secretEncrypted: encrypt(secret, 'webhook'), campaignId: campaignId ?? null }).returning();
   const url = `${config.appUrl}/api/v1/hooks/${w.id}`;
@@ -127,7 +127,7 @@ export async function createInbound(ctx: AuthedContext, sourceLabel: string, cam
 }
 
 export async function deleteInbound(ctx: AuthedContext, id: string) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'integrations.manage');
   await ctx.db.delete(inboundWebhooks).where(and(eq(inboundWebhooks.tenantId, ctx.tenantId), eq(inboundWebhooks.id, id)));
   return { ok: true };
 }
@@ -140,7 +140,7 @@ export async function listOutbound(ctx: AuthedContext) {
 }
 
 export async function createOutbound(ctx: AuthedContext, input: { destinationUrl: string; eventTrigger: (typeof OUTBOUND_EVENTS)[number]; secret?: string | null }) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'integrations.manage');
   let u: URL;
   try { u = new URL(input.destinationUrl); } catch { throw fail.bad('Enter a valid https URL.'); }
   if (u.protocol !== 'https:' && config.env === 'production') throw fail.bad('Outbound webhooks must use https.');
@@ -152,7 +152,7 @@ export async function createOutbound(ctx: AuthedContext, input: { destinationUrl
 }
 
 export async function deleteOutbound(ctx: AuthedContext, id: string) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'integrations.manage');
   await ctx.db.delete(outboundWebhooks).where(and(eq(outboundWebhooks.tenantId, ctx.tenantId), eq(outboundWebhooks.id, id)));
   return { ok: true };
 }
@@ -167,7 +167,7 @@ async function aiConfigRow(ctx: AuthedContext) {
 }
 
 export async function getAiProvider(ctx: AuthedContext) {
-  assertRole(ctx, 'owner');
+  assertPerm(ctx, 'ai.manage');
   const r = await aiConfigRow(ctx);
   const { advancedUsage } = await import('../ai/router.js');
   const usage = await advancedUsage(ctx.db, ctx.tenantId, ctx.plan);
@@ -185,7 +185,7 @@ export async function patchAiProvider(ctx: AuthedContext, p: {
   fallback?: { enabled?: boolean; provider?: AiProv | null; modelName?: string | null; apiKey?: string | null };
   refreshIntervalMinutes?: number; eventTriggers?: string[];
 }) {
-  assertRole(ctx, 'owner');
+  assertPerm(ctx, 'ai.manage');
   const r = await aiConfigRow(ctx);
   const set: Partial<typeof aiProviderConfigs.$inferInsert> = { updatedAt: new Date() };
   if (p.primary) {
@@ -206,7 +206,7 @@ export async function patchAiProvider(ctx: AuthedContext, p: {
 }
 
 export async function verifyAi(ctx: AuthedContext, which: 'primary' | 'fallback') {
-  assertRole(ctx, 'owner');
+  assertPerm(ctx, 'ai.manage');
   const r = await aiConfigRow(ctx);
   const provider = which === 'primary' ? r.primaryProvider : r.fallbackProvider;
   const key = which === 'primary' ? r.primaryApiKeyEncrypted : r.fallbackApiKeyEncrypted;
@@ -221,7 +221,7 @@ export async function verifyAi(ctx: AuthedContext, which: 'primary' | 'fallback'
 // ------------------------------------------------------------------ Telegram
 
 export async function getTelegram(ctx: AuthedContext) {
-  assertRole(ctx, 'owner');
+  assertPerm(ctx, 'telegram.manage');
   const [t] = await ctx.db.select().from(telegramConnections).where(eq(telegramConnections.tenantId, ctx.tenantId));
   const linkCode = ctx.user.id.replace(/-/g, '');
   const camploBot = (await platform(ctx.db)).telegram.botToken;
@@ -231,7 +231,7 @@ export async function getTelegram(ctx: AuthedContext) {
 }
 
 export async function verifyTelegram(ctx: AuthedContext, botToken: string) {
-  assertRole(ctx, 'owner');
+  assertPerm(ctx, 'telegram.manage');
   const res = await verifyBot(botToken.trim());
   const values = { botTokenEncrypted: encrypt(botToken.trim(), 'telegram'), botUsername: res.username ?? null, verified: res.ok };
   await ctx.db.insert(telegramConnections).values({ tenantId: ctx.tenantId, ...values })
@@ -245,13 +245,13 @@ export async function verifyTelegram(ctx: AuthedContext, botToken: string) {
 }
 
 export async function patchTelegram(ctx: AuthedContext, p: { criticalAlertsEnabled?: boolean; dailyDigestEnabled?: boolean }) {
-  assertRole(ctx, 'owner');
+  assertPerm(ctx, 'telegram.manage');
   await ctx.db.update(telegramConnections).set(p).where(eq(telegramConnections.tenantId, ctx.tenantId));
   return getTelegram(ctx);
 }
 
 export async function disconnectTelegram(ctx: AuthedContext) {
-  assertRole(ctx, 'owner');
+  assertPerm(ctx, 'telegram.manage');
   await ctx.db.delete(telegramConnections).where(eq(telegramConnections.tenantId, ctx.tenantId));
   return { ok: true };
 }
@@ -271,7 +271,7 @@ export async function patchNotificationSettings(ctx: AuthedContext, p: {
   dailyDigest?: boolean; dailyDigestTime?: string; slaBreachAlerts?: boolean; slaBreachChannel?: 'email' | 'telegram' | 'both';
   earlyWarning?: boolean; budgetAlerts?: boolean; webhookOffline?: boolean; notificationEmail?: string;
 }) {
-  assertRole(ctx, 'owner');
+  assertPerm(ctx, 'notifications.manage');
   const prefs = { ...ctx.tenant.notificationPrefs };
   if (p.slaBreachAlerts !== undefined) prefs.slaBreach = p.slaBreachAlerts;
   if (p.slaBreachChannel) prefs.slaChannel = p.slaBreachChannel;

@@ -1,9 +1,10 @@
 /** Workspace, team management (TM1–TM4), notifications, workspace log and global search. */
+import { PERMISSION_KEYS, PERMISSIONS, type Permission } from '../domain/permissions.js';
 import { planLimits, planPrice, platform } from '../lib/platform.js';
-import { createCheckout } from '../lib/polar.js';
+import { changeSubscriptionPlan, createCheckout } from '../lib/polar.js';
 import { and, desc, eq, gte, ilike, isNotNull, isNull, or, sql } from 'drizzle-orm';
-import { campaignMembers, campaigns, deployments, leads, notifications, tenants, users, workspaceLogs } from '../db/schema.js';
-import { fail, assertRole, type AuthedContext } from '../lib/orpc.js';
+import { campaignMembers, campaigns, deployments, leads, notifications, sessions, tenants, users, workspaceLogs } from '../db/schema.js';
+import { fail, assertRole, type AuthedContext, assertPerm } from '../lib/orpc.js';
 import { config } from '../lib/config.js';
 import { randomToken, sha256 } from '../lib/crypto.js';
 import { emails, sendMail } from '../lib/mailer.js';
@@ -30,7 +31,7 @@ const limitsFor = async (ctx: AuthedContext) => Object.fromEntries(Object.entrie
 export async function patchWorkspace(ctx: AuthedContext, patch: {
   name?: string; teamSize?: string; hasMarketingStack?: boolean; stackCheckCompleted?: boolean; setupComplete?: boolean; notificationEmail?: string;
 }) {
-  assertRole(ctx, 'owner');
+  assertPerm(ctx, 'workspace.manage');
   const set: Partial<typeof tenants.$inferInsert> = {};
   if (patch.name) set.businessName = patch.name.trim();
   if (patch.teamSize !== undefined) set.teamSize = patch.teamSize;
@@ -90,20 +91,71 @@ export async function patchSettings(ctx: AuthedContext, p: {
 }
 
 /** O6 upgrade. With Polar configured this returns a checkout URL; the webhook applies the new plan. */
+const PLAN_ORDER: Plan[] = ['starter', 'growth', 'watchtower', 'agency'];
+
+/** What the workspace uses today, against a plan's limits — a downgrade is refused while anything is over. */
+async function usageOver(ctx: AuthedContext, target: Plan) {
+  const lim = await planLimits(target, ctx.db);
+  const [c] = await ctx.db.select({ n: sql<number>`count(*)` }).from(campaigns).where(and(eq(campaigns.tenantId, ctx.tenantId), sql`${campaigns.status} <> 'complete'`));
+  const [d] = await ctx.db.select({ n: sql<number>`count(*)` }).from(deployments).where(and(eq(deployments.tenantId, ctx.tenantId), sql`${deployments.status} <> 'deleted'`));
+  const [m] = await ctx.db.select({ n: sql<number>`count(*)` }).from(users).where(and(eq(users.tenantId, ctx.tenantId), isNull(users.removedAt)));
+  const over: string[] = [];
+  if (Number(c.n) > lim.campaigns) over.push(`${Number(c.n)} active campaigns (plan allows ${lim.campaigns})`);
+  if (Number(d.n) > lim.deployments) over.push(`${Number(d.n)} pages (plan allows ${lim.deployments})`);
+  if (Number(m.n) > lim.members) over.push(`${Number(m.n)} team members (plan allows ${lim.members})`);
+  return over;
+}
+
+/** Subscription page (Settings → Subscription): current plan, usage and every plan's price + limits. Owner only. */
+export async function subscription(ctx: AuthedContext) {
+  assertRole(ctx, 'owner');
+  const pf = await platform(ctx.db);
+  const plans = [];
+  for (const p of PLAN_ORDER) {
+    const l = await planLimits(p, ctx.db);
+    plans.push({ plan: p, price: pf.pricing.plans[p].price, limits: Object.fromEntries(Object.entries(l).map(([k, v]) => [k, Number.isFinite(v) ? v : null])), available: p !== 'agency', blockers: p === ctx.plan ? [] : await usageOver(ctx, p) });
+  }
+  const [c] = await ctx.db.select({ n: sql<number>`count(*)` }).from(campaigns).where(and(eq(campaigns.tenantId, ctx.tenantId), sql`${campaigns.status} <> 'complete'`));
+  const [d] = await ctx.db.select({ n: sql<number>`count(*)` }).from(deployments).where(and(eq(deployments.tenantId, ctx.tenantId), sql`${deployments.status} <> 'deleted'`));
+  const [m] = await ctx.db.select({ n: sql<number>`count(*)` }).from(users).where(and(eq(users.tenantId, ctx.tenantId), isNull(users.removedAt)));
+  return {
+    plan: ctx.plan, monthlyFee: ctx.tenant.monthlyFeeOverride == null ? pf.pricing.plans[ctx.plan].price : Number(ctx.tenant.monthlyFeeOverride),
+    managedByPolar: !!ctx.tenant.polarSubscriptionId, usage: { campaigns: Number(c.n), deployments: Number(d.n), members: Number(m.n), storageUsedBytes: ctx.tenant.storageUsedBytes, storageQuotaBytes: ctx.tenant.storageQuotaBytes },
+    plans,
+  };
+}
+
+/** O6: upgrade or downgrade. Only the owner. Polar subscriptions are switched in place; otherwise checkout. */
 export async function upgrade(ctx: AuthedContext, targetPlan: Plan) {
   assertRole(ctx, 'owner');
-  const checkoutUrl = await createCheckout({ plan: targetPlan, email: ctx.tenant.ownerEmail, tenantId: ctx.tenantId });
-  if (checkoutUrl) return { checkoutUrl, applied: false };
-  if ((await platform(ctx.db)).billing.allowDirectPlanChange) {
+  if (targetPlan === ctx.plan) throw fail.bad(`You're already on ${targetPlan}.`);
+  if (targetPlan === 'agency') throw fail.bad('The Agency plan arrives in v2.');
+  const downgrade = PLAN_ORDER.indexOf(targetPlan) < PLAN_ORDER.indexOf(ctx.plan);
+  if (downgrade) {
+    const over = await usageOver(ctx, targetPlan);
+    if (over.length) throw fail.conflict(`Before moving to ${targetPlan}, reduce: ${over.join('; ')}.`, 'over_plan_limits');
+  }
+  const pf = await platform(ctx.db);
+  if (ctx.tenant.polarSubscriptionId && pf.billing.polarAccessToken) {
+    const switched = await changeSubscriptionPlan(ctx.tenant.polarSubscriptionId, targetPlan);
+    if (!switched) throw fail.bad('Your payment provider could not change the subscription. Try again in a moment, or contact support.');
+    await logWorkspace(ctx.db, ctx.tenantId, ctx.user.id, `Plan change to ${targetPlan} requested (Polar applies it)`);
+    return { checkoutUrl: null, applied: false, pending: true };
+  }
+  if (!downgrade) {
+    const checkoutUrl = await createCheckout({ plan: targetPlan, email: ctx.tenant.ownerEmail, tenantId: ctx.tenantId });
+    if (checkoutUrl) return { checkoutUrl, applied: false };
+  }
+  if (pf.billing.allowDirectPlanChange || downgrade) {
     await ctx.db.update(tenants).set({ plan: targetPlan }).where(eq(tenants.id, ctx.tenantId));
-    await logWorkspace(ctx.db, ctx.tenantId, ctx.user.id, `Plan changed to ${targetPlan}`);
+    await logWorkspace(ctx.db, ctx.tenantId, ctx.user.id, `Plan changed from ${ctx.plan} to ${targetPlan}`);
     return { checkoutUrl: null, applied: true };
   }
   throw fail.bad('Billing is not configured for this environment.');
 }
 
 export async function uploadLogo(ctx: AuthedContext, file: File) {
-  assertRole(ctx, 'owner');
+  assertPerm(ctx, 'workspace.manage');
   if (!/^image\/(png|jpe?g)$/.test(file.type)) throw fail.bad('Logo must be a PNG or JPG.');
   if (file.size > 2 * 1024 * 1024) throw fail.bad('Logo must be 2MB or smaller.');
   const path = `logos/${ctx.tenantId}/${Date.now()}.${file.type.endsWith('png') ? 'png' : 'jpg'}`;
@@ -114,7 +166,7 @@ export async function uploadLogo(ctx: AuthedContext, file: File) {
 }
 
 export async function removeLogo(ctx: AuthedContext) {
-  assertRole(ctx, 'owner');
+  assertPerm(ctx, 'workspace.manage');
   await ctx.db.update(tenants).set({ logoUrl: null }).where(eq(tenants.id, ctx.tenantId));
   return { ok: true };
 }
@@ -172,13 +224,52 @@ export async function changeRole(ctx: AuthedContext, id: string, role: 'admin' |
   return { ok: true, role };
 }
 
+/** Owner switches individual permissions for a teammate. `null` for a key returns it to the role default. */
+export async function setPermissions(ctx: AuthedContext, id: string, changes: Record<string, boolean | null>) {
+  assertRole(ctx, 'owner');
+  const [u] = await ctx.db.select().from(users).where(and(eq(users.tenantId, ctx.tenantId), eq(users.id, id), isNull(users.removedAt)));
+  if (!u) throw fail.notFound('Member not found.');
+  if (u.role === 'owner') throw fail.bad('The owner always has every permission.');
+  const next: Record<string, boolean> = { ...(u.permissions ?? {}) };
+  const changed: string[] = [];
+  for (const [k, v] of Object.entries(changes)) {
+    if (!(PERMISSION_KEYS as string[]).includes(k)) throw fail.bad(`Unknown permission: ${k}`);
+    if (v === null) delete next[k]; else next[k] = v;
+    changed.push(`${PERMISSIONS[k as Permission].label}: ${v === null ? 'role default' : v ? 'on' : 'off'}`);
+  }
+  const [updated] = await ctx.db.update(users).set({ permissions: Object.keys(next).length ? next : null }).where(eq(users.id, id)).returning();
+  await logWorkspace(ctx.db, ctx.tenantId, ctx.user.id, `${u.name}'s permissions changed — ${changed.join('; ')}`);
+  return publicUser(updated);
+}
+
+/** Profile picture for the signed-in user (owner and teammates alike). */
+export async function uploadAvatar(ctx: AuthedContext, file: File) {
+  if (!/^image\/(png|jpe?g|webp)$/.test(file.type)) throw fail.bad('Profile picture must be a PNG, JPG or WebP image.');
+  if (file.size > 2 * 1024 * 1024) throw fail.bad('Profile picture must be 2MB or smaller.');
+  const ext = file.type.endsWith('png') ? 'png' : file.type.endsWith('webp') ? 'webp' : 'jpg';
+  const path = `avatars/${ctx.tenantId}/${ctx.user.id}-${Date.now()}.${ext}`;
+  const st = await storageFor(ctx.db);
+  await st.put(path, Buffer.from(await file.arrayBuffer()), file.type);
+  if (ctx.user.avatarUrl?.startsWith('/api/files/avatars/')) await st.removePrefix(ctx.user.avatarUrl.slice('/api/files/'.length)).catch(() => undefined);
+  const [u] = await ctx.db.update(users).set({ avatarUrl: `/api/files/${path}` }).where(eq(users.id, ctx.user.id)).returning();
+  return publicUser(u);
+}
+
+export async function removeAvatar(ctx: AuthedContext) {
+  if (ctx.user.avatarUrl?.startsWith('/api/files/avatars/')) await (await storageFor(ctx.db)).removePrefix(ctx.user.avatarUrl.slice('/api/files/'.length)).catch(() => undefined);
+  const [u] = await ctx.db.update(users).set({ avatarUrl: null }).where(eq(users.id, ctx.user.id)).returning();
+  return publicUser(u);
+}
+
 /** Soft-remove: audit trails keep pointing at the user record. */
 export async function removeMember(ctx: AuthedContext, id: string) {
   assertRole(ctx, 'owner');
   const [u] = await ctx.db.select().from(users).where(and(eq(users.tenantId, ctx.tenantId), eq(users.id, id), isNull(users.removedAt)));
   if (!u) throw fail.notFound('Member not found.');
   if (u.role === 'owner') throw fail.forbidden('The owner cannot be removed.');
-  await ctx.db.update(users).set({ removedAt: new Date(), passwordHash: null }).where(eq(users.id, id));
+  await ctx.db.update(users).set({ removedAt: new Date(), passwordHash: null, telegramChatId: null }).where(eq(users.id, id));
+  // Signed out everywhere immediately; access tokens are rejected because removed users never resolve.
+  await ctx.db.update(sessions).set({ revokedAt: new Date() }).where(and(eq(sessions.userId, id), isNull(sessions.revokedAt)));
   // Unresponded leads they owned go back to the shared inbox.
   await ctx.db.update(leads).set({ assigneeId: null, assignmentPath: null }).where(and(eq(leads.tenantId, ctx.tenantId), eq(leads.assigneeId, id), eq(leads.status, 'not_responded')));
   await logWorkspace(ctx.db, ctx.tenantId, ctx.user.id, `${u.name} removed from the workspace`);
@@ -186,7 +277,7 @@ export async function removeMember(ctx: AuthedContext, id: string) {
 }
 
 export async function listInvitations(ctx: AuthedContext) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'team.invite');
   const rows = await ctx.db.select().from(users).where(and(eq(users.tenantId, ctx.tenantId), isNull(users.joinedAt), isNull(users.removedAt)));
   return rows.map((u) => ({
     id: u.id, email: u.email, role: u.role, invitedAt: u.createdAt, expiresAt: u.invitationExpiresAt,
@@ -202,7 +293,7 @@ async function sendInvite(ctx: AuthedContext, u: typeof users.$inferSelect) {
 }
 
 export async function invite(ctx: AuthedContext, email: string, role: 'admin' | 'member') {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'team.invite');
   const e = email.trim().toLowerCase();
   const [existing] = await ctx.db.select().from(users).where(and(eq(users.tenantId, ctx.tenantId), sql`lower(${users.email}) = ${e}`));
   if (existing && !existing.removedAt) {
@@ -223,7 +314,7 @@ export async function invite(ctx: AuthedContext, email: string, role: 'admin' | 
 }
 
 export async function resendInvitation(ctx: AuthedContext, id: string) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'team.invite');
   const [u] = await ctx.db.select().from(users).where(and(eq(users.tenantId, ctx.tenantId), eq(users.id, id), isNull(users.joinedAt), isNull(users.removedAt)));
   if (!u) throw fail.notFound('Invitation not found.');
   await sendInvite(ctx, u);
@@ -231,7 +322,7 @@ export async function resendInvitation(ctx: AuthedContext, id: string) {
 }
 
 export async function cancelInvitation(ctx: AuthedContext, id: string) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'team.invite');
   await ctx.db.update(users).set({ removedAt: new Date(), invitationToken: null })
     .where(and(eq(users.tenantId, ctx.tenantId), eq(users.id, id), isNull(users.joinedAt)));
   return { ok: true };
@@ -261,7 +352,7 @@ export async function markNotificationRead(ctx: AuthedContext, id: string | 'all
 }
 
 export async function workspaceLog(ctx: AuthedContext, limit = 100) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'logs.view');
   const rows = await ctx.db.select({ l: workspaceLogs, name: users.name }).from(workspaceLogs).leftJoin(users, eq(users.id, workspaceLogs.actorId))
     .where(eq(workspaceLogs.tenantId, ctx.tenantId)).orderBy(desc(workspaceLogs.createdAt)).limit(limit);
   return rows.map((r) => ({ id: r.l.id, actorName: r.name ?? 'Camplo', description: r.l.description, createdAt: r.l.createdAt }));

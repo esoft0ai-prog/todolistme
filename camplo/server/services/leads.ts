@@ -167,7 +167,7 @@ export async function afterRespond(db: DB, tenant: Tenant, l: Lead, user: { id: 
 
 /** Path B (owner/admin assigns unowned lead) or Path C (owner reassigns). Timer 1 never resets. */
 export async function assign(ctx: AuthedContext, id: string, assigneeId: string) {
-  assertRole(ctx, 'owner', 'admin');
+  if (ctx.role !== 'owner') throw fail.forbidden('Only the workspace owner can assign leads to teammates.', 'owner_only');
   const l = await loadLead(ctx, id);
   if (l.status === 'responded') throw fail.conflict('Responded leads cannot be reassigned.');
   const [target] = await ctx.db.select().from(users).where(and(eq(users.tenantId, ctx.tenantId), eq(users.id, assigneeId), isNull(users.removedAt)));

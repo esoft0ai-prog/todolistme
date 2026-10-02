@@ -5,7 +5,7 @@
  */
 import { and, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { campaigns, leads, notes, teamNoteRecipients, teamNotes, users } from '../db/schema.js';
-import { fail, assertFeature, assertRole, type AuthedContext } from '../lib/orpc.js';
+import { fail, assertFeature, assertRole, type AuthedContext, assertPerm } from '../lib/orpc.js';
 import { HOUR, noteEditable as noteEditableAt } from '../domain/rules.js';
 import { config } from '../lib/config.js';
 
@@ -131,7 +131,7 @@ export async function listTeamNotes(ctx: AuthedContext, opts: { addressedTo?: 'm
 export async function createTeamNote(ctx: AuthedContext, input: {
   content: string; recipientIds: string[]; attachmentType?: 'lead' | 'campaign' | null; attachmentId?: string | null; deadline?: string | null;
 }) {
-  assertRole(ctx, 'owner', 'admin');
+  assertPerm(ctx, 'team_notes.post');
   assertFeature(ctx, 'team_notes');
   if (!input.content.trim()) throw fail.bad('Note cannot be empty.');
   if (!input.recipientIds.length) throw fail.bad('Tag at least one team member.');
