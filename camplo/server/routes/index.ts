@@ -83,7 +83,7 @@ const teamRoutes = {
 // ------------------------------------------------------------------ campaigns (11) + share + logs + retrospective
 const campaignInput = z.object({
   name: z.string().trim().min(1).max(100), description: z.string().nullable().optional(), startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  budget: money.optional(), currency: z.string().max(10).optional(), cplThreshold: money.optional(), dailySpend: money.optional(),
+  budget: money.optional(), cplThreshold: money.optional(), dailySpend: money.optional(),
 });
 const campaignRoutes = {
   list: authed.route(r('GET', '/campaigns')).input(pageQuery).handler(async ({ input, context }) => paginate(await camp.listCampaigns(context), input)),

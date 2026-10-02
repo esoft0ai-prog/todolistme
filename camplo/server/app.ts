@@ -24,7 +24,7 @@ import { subscribe } from './rt/hub.js';
 import { bindDatabase, maybeSweep, runSweeps } from './jobs/scheduler.js';
 import { ingestDeployment, ingestLifecycle, ingestNamed } from './services/leads.js';
 import { retrospectivePdf } from './services/campaigns.js';
-import { resolveSite, serveSiteFile } from './services/pages.js';
+import { resolveSite, serveSiteFile, siteUnavailable } from './services/pages.js';
 import { handlePolarEvent, ingestErrors, verifyPolarSignature } from './services/admin.js';
 import { handleUpdate, webhookSecretFor } from './services/telegram.js';
 
@@ -52,6 +52,23 @@ type Req = Request & { rawBody?: Buffer };
 const wrap = (fn: (req: Req, res: Response, db: DB) => Promise<unknown>) => async (req: Req, res: Response, next: NextFunction) => {
   try { await fn(req, res, (await getDatabase()).db); } catch (e) { next(e); }
 };
+
+/**
+ * HTML is never cached, so pausing, rolling back or redeploying a page takes effect on the next request.
+ * Assets (css/js/images) may be cached briefly.
+ */
+function sendSiteFile(res: Response, f: { data: Buffer; contentType: string }) {
+  res.setHeader('Content-Type', f.contentType);
+  if (/text\/html/.test(f.contentType)) { res.setHeader('Cache-Control', 'no-store, max-age=0'); res.setHeader('CDN-Cache-Control', 'no-store'); }
+  else res.setHeader('Cache-Control', 'public, max-age=300');
+  res.send(f.data);
+}
+
+function sendUnavailable(res: Response, why: 'missing' | 'paused' | 'offline') {
+  const msg = { missing: ['Page not found', 'This page does not exist or has been removed.'], paused: ['This page is paused', 'The owner has paused this page. Please check back later.'], offline: ['This page is offline', 'This page is temporarily unavailable.'] }[why];
+  res.status(why === 'missing' ? 404 : 503).setHeader('Cache-Control', 'no-store');
+  res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${msg[0]}</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.5 system-ui,sans-serif;background:#f6f6f8;color:#1a1a24}div{text-align:center;padding:24px}h1{font-size:22px;margin:0 0 8px}p{margin:0;color:#5a5a70}</style></head><body><div><h1>${msg[0]}</h1><p>${msg[1]}</p></div></body></html>`);
+}
 
 function sendError(res: Response, e: unknown) {
   if (e instanceof ORPCError) { res.status(e.status).json(errorBody(e)); return; }
@@ -94,10 +111,8 @@ export function createApp() {
       const site = await resolveSite(db, { host });
       if (!site) return next();
       const f = await serveSiteFile(db, site, req.path);
-      if (!f) { res.status(404).send('Not found'); return; }
-      res.setHeader('Content-Type', f.contentType);
-      res.setHeader('Cache-Control', 'public, max-age=60');
-      res.send(f.data);
+      if (!f) { sendUnavailable(res, siteUnavailable(site) ?? 'missing'); return; }
+      sendSiteFile(res, f);
     } catch (e) { next(e); }
   });
 
@@ -106,12 +121,10 @@ export function createApp() {
     const [, sub, rest] = req.path.match(/^\/sites\/([a-z0-9-]+)\/(.*)$/) ?? [];
     const site = await resolveSite(db, { subdomain: sub });
     const f = site ? await serveSiteFile(db, site, rest ?? '') : null;
-    if (!f) { res.status(404).type('text/plain').send('This page is not available.'); return; }
-    res.setHeader('Content-Type', f.contentType);
-    res.setHeader('Cache-Control', 'public, max-age=60');
+    if (!f) { sendUnavailable(res, siteUnavailable(site) ?? 'missing'); return; }
     // Hosted pages are static and isolated from the app origin's APIs.
     res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
-    res.send(f.data);
+    sendSiteFile(res, f);
   }));
 
   // ---------------------------------------------------------------- raw-body webhooks

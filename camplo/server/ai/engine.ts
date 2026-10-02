@@ -32,12 +32,32 @@ import { makeContract, runWorker } from './workers.js';
 type Tenant = typeof tenants.$inferSelect;
 type NewInsight = Omit<typeof insights.$inferInsert, 'tenantId'> & { dedupeKey: string };
 
+/**
+ * One live card per condition: while an undismissed card with the same key exists, it is refreshed in place
+ * (new numbers, moved to the top of the feed) instead of a duplicate being added. Inserts for the same
+ * tenant + key are serialised so two concurrent refreshes cannot both insert.
+ */
+const inserting = new Map<string, Promise<boolean>>();
 async function upsertInsight(db: DB, tenantId: string, i: NewInsight): Promise<boolean> {
-  const [dup] = await db.select({ id: insights.id }).from(insights)
-    .where(and(eq(insights.tenantId, tenantId), eq(insights.dedupeKey, i.dedupeKey), gte(insights.generatedAt, new Date(Date.now() - DAY))));
-  if (dup) return false;
-  await db.insert(insights).values({ ...i, tenantId });
-  return true;
+  const lockKey = `${tenantId}:${i.dedupeKey}`;
+  const prev = inserting.get(lockKey);
+  if (prev) await prev.catch(() => false);
+  const run = (async () => {
+    const [live] = await db.select({ id: insights.id, observation: insights.observation }).from(insights)
+      .where(and(eq(insights.tenantId, tenantId), eq(insights.dedupeKey, i.dedupeKey), isNull(insights.dismissedAt)));
+    if (live) {
+      await db.update(insights).set({ observation: i.observation, evidence: i.evidence ?? null, severity: i.severity, generatedAt: new Date() }).where(eq(insights.id, live.id));
+      return false;
+    }
+    // A dismissed card stays dismissed for a day before the same condition can resurface.
+    const [recent] = await db.select({ id: insights.id }).from(insights)
+      .where(and(eq(insights.tenantId, tenantId), eq(insights.dedupeKey, i.dedupeKey), gte(insights.dismissedAt, new Date(Date.now() - DAY))));
+    if (recent) return false;
+    await db.insert(insights).values({ ...i, tenantId });
+    return true;
+  })();
+  inserting.set(lockKey, run);
+  try { return await run; } finally { if (inserting.get(lockKey) === run) inserting.delete(lockKey); }
 }
 
 const pct = (a: number, b: number) => Math.round(((a - b) / b) * 100);
@@ -48,7 +68,7 @@ export async function level1(db: DB, t: Tenant): Promise<number> {
   const camps = await db.select().from(campaigns).where(and(eq(campaigns.tenantId, t.id), sql`${campaigns.status} <> 'complete'`));
   const stats = await campaignStats(db, t.id, camps.map((c) => c.id));
   const avgConv = await workspaceConversion(db, t.id);
-  const hourKey = new Date().toISOString().slice(0, 13), dayKey = new Date().toISOString().slice(0, 10);
+  const dayKey = new Date().toISOString().slice(0, 10);
   let created = 0;
   const redByCampaign = new Map<string, string[]>();
   const addRed = (cid: string, s: string) => redByCampaign.set(cid, [...(redByCampaign.get(cid) ?? []), s]);
@@ -63,7 +83,7 @@ export async function level1(db: DB, t: Tenant): Promise<number> {
     if (od.length) {
       addRed(c.id, `${od.length} overdue lead${od.length > 1 ? 's' : ''}`);
       if (await upsertInsight(db, t.id, {
-        campaignId: c.id, campaignTag: c.name, type: 'alert', severity: 'red', category: 'SLA', dedupeKey: `sla:${c.id}:${hourKey}`,
+        campaignId: c.id, campaignTag: c.name, type: 'alert', severity: 'red', category: 'SLA', dedupeKey: `sla:${c.id}`,
         observation: `${od.length} lead${od.length > 1 ? 's are' : ' is'} overdue on ${c.name}.`,
         evidence: `${od[0].name} has waited ${formatDuration(Date.now() - od[0].at.getTime())} against a ${thr}-minute threshold. ${od.filter((l) => !l.assignee).length} are unclaimed. Open the Lead Dossier and respond or notify the assignee.`,
       })) created++;
@@ -75,7 +95,7 @@ export async function level1(db: DB, t: Tenant): Promise<number> {
       if (webhookState(h.lastReceivedAt, h.staleThresholdMinutes) === 'offline') {
         addRed(c.id, `${d.name} webhook offline`);
         if (await upsertInsight(db, t.id, {
-          campaignId: c.id, campaignTag: c.name, type: 'alert', severity: 'red', category: 'SLA', dedupeKey: `hook:${d.id}:${dayKey}`,
+          campaignId: c.id, campaignTag: c.name, type: 'alert', severity: 'red', category: 'SLA', dedupeKey: `hook:${d.id}`,
           observation: `The webhook on ${d.name} has gone silent.`,
           evidence: `No submissions for ${formatDuration(Date.now() - h.lastReceivedAt!.getTime())}. If ads are still running, leads may be lost. Test the webhook from the Pages screen.`,
         })) {
@@ -102,7 +122,7 @@ export async function level1(db: DB, t: Tenant): Promise<number> {
     const cplValue = campaignCpl(c, s);
     if (hasFeature(plan, 'budget') && cplValue != null && c.cplThreshold != null && cplValue > Number(c.cplThreshold)) {
       if (await upsertInsight(db, t.id, {
-        campaignId: c.id, campaignTag: c.name, type: 'alert', severity: 'amber', category: 'Spend', dedupeKey: `cpl:${c.id}:${dayKey}`,
+        campaignId: c.id, campaignTag: c.name, type: 'alert', severity: 'amber', category: 'Spend', dedupeKey: `cpl:${c.id}`,
         observation: `CPL on ${c.name} is above your ${Number(c.cplThreshold).toLocaleString()} threshold.`,
         evidence: `Current CPL ${cplValue.toLocaleString()} ${c.currency} (+${pct(cplValue, Number(c.cplThreshold))}% over). Check webhook health and page conversion before increasing budget.`,
       })) {
@@ -159,7 +179,7 @@ export async function level1(db: DB, t: Tenant): Promise<number> {
     if (reasons.length < 2) continue;
     const c = camps.find((x) => x.id === cid)!;
     if (await upsertInsight(db, t.id, {
-      campaignId: cid, campaignTag: c.name, type: 'priority_flag', severity: 'red', category: 'SLA', dedupeKey: `pf:${cid}:${dayKey}`,
+      campaignId: cid, campaignTag: c.name, type: 'priority_flag', severity: 'red', category: 'SLA', dedupeKey: `pf:${cid}`,
       observation: `${c.name} is failing at ${reasons.length} handoffs at once — this is systemic, not one slow rep.`,
       evidence: `${reasons.join(', ')}. Fix the pipeline before adding budget.`,
     })) {

@@ -70,7 +70,7 @@ export async function createCampaign(ctx: AuthedContext, input: {
   }
   const [c] = await ctx.db.insert(campaigns).values({
     tenantId: ctx.tenantId, name: input.name.trim(), description: input.description ?? null, ownerId: ctx.user.id,
-    startDate: input.startDate ?? new Date().toISOString().slice(0, 10), currency: input.currency ?? 'USD',
+    startDate: input.startDate ?? new Date().toISOString().slice(0, 10), currency: 'USD', // all money is USD
     budget: input.budget == null ? null : String(input.budget), cplThreshold: input.budget == null || input.cplThreshold == null ? null : String(input.cplThreshold),
     dailySpend: input.dailySpend == null ? null : String(input.dailySpend),
   }).returning();
@@ -228,7 +228,7 @@ export async function generateRetrospective(db: DB, tenantId: string, campaignId
     `Campaign "${c.name}" ran ${c.startDate} to ${(c.completedAt ?? new Date()).toISOString().slice(0, 10)}.`,
     `${s.leadCount} leads; ${s.respondedCount} responded (${ackRate == null ? 'n/a' : Math.round(ackRate * 100) + '%'}).`,
     `Average speed-to-lead ${formatDuration(s.avgResponseMs)} against a 5-minute target.`,
-    cplValue != null ? `Cost per lead ${cplValue} ${c.currency}.` : 'No budget tracked.',
+    cplValue != null ? `Cost per lead $${cplValue}.` : 'No budget tracked.',
   ];
   let observation: string;
   const res = await llm(db, {
@@ -335,7 +335,7 @@ async function renderRetroPdf(db: DB, t: typeof tenants.$inferSelect, r: RetroVi
     ['Total leads', String(r.totalLeads ?? 0)], ['Avg speed-to-lead', formatDuration(r.avgResponseTimeMs)],
     ['Acknowledgment rate', r.acknowledgmentRate == null ? '—' : `${Math.round(r.acknowledgmentRate * 100)}%`],
   ];
-  if (r.cpl != null) tiles.push(['Cost per lead', `${r.cpl.toLocaleString()} ${r.currency}`]);
+  if (r.cpl != null) tiles.push(['Cost per lead', `$${r.cpl.toLocaleString('en-US', { maximumFractionDigits: 2 })}`]);
   let y = doc.y + 24;
   tiles.forEach(([k, v], i) => {
     const x = 56 + i * 124;

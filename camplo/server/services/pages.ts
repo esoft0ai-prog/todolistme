@@ -369,6 +369,15 @@ export async function resolveSite(db: DB, key: { subdomain?: string; host?: stri
   return r ?? null;
 }
 
+/** Why a hosted page is not being served (shown to visitors instead of a bare 404). */
+export function siteUnavailable(site: { d: Deployment; t: typeof tenants.$inferSelect } | null): 'missing' | 'paused' | 'offline' | null {
+  if (!site || site.d.status === 'deleted' || site.d.status === 'failed') return 'missing';
+  if (site.d.status !== 'ready') return 'offline';
+  if (site.d.servingState !== 'active') return 'paused';
+  if (site.t.status === 'suspended' && site.t.suspendedAt && Date.now() - site.t.suspendedAt.getTime() > 7 * DAY) return 'offline';
+  return null;
+}
+
 export async function serveSiteFile(db: DB, site: { d: Deployment; t: typeof tenants.$inferSelect }, path: string) {
   const { d, t } = site;
   if (d.status !== 'ready' || d.servingState !== 'active') return null;

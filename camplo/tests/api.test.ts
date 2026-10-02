@@ -201,7 +201,10 @@ describe('page hosting', () => {
     const a = (await owner.get(`/api/pages/${up.body.id}/analytics`)).body;
     expect(a.daily.at(-1).visits).toBe(1);
     expect((await owner.post(`/api/pages/${up.body.id}/pause`)).status).toBe(200);
-    expect((await request(app).get(`/sites/${pg.subdomain}/`)).status).toBe(404);
+    const paused = await request(app).get(`/sites/${pg.subdomain}/`);
+    expect(paused.status).toBe(503);
+    expect(paused.text).toContain('This page is paused');
+    expect(paused.headers['cache-control']).toBe('no-store');
   });
   it('rejects ZIPs without an index.html', async () => {
     const zip = new AdmZip();

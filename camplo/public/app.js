@@ -147,13 +147,13 @@
     if (!n || n === 'Camplo') return html;
     return html.replace(/>C<span>\.<\/span>/g, '>' + esc(n.charAt(0).toUpperCase()) + '<span>.</span>').replace(/\bCamplo\b/g, esc(n));
   }
-  function planPrice(p) { var v = PF.prices[p]; return (PF.currency === 'USD' ? '$' : PF.currency + ' ') + (v == null ? '—' : v); }
+  function planPrice(p) { var v = PF.prices[p]; return v == null ? '—' : '$' + v; }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function byId(list, id) { for (var i = 0; i < (list || []).length; i++) if (list[i].id === id) return list[i]; return null; }
   function user(id) { return byId(D && D.team, id) || { name: 'Former member', initials: '·' }; }
   function camp(id) { return byId(D && D.campaigns, id); }
-  var SYM = { NGN: '₦', USD: '$', GBP: '£', EUR: '€', KES: 'KSh ', GHS: 'GH₵', ZAR: 'R' };
-  function money(n, cur) { if (n == null) return '—'; return (SYM[cur] || (cur ? cur + ' ' : '$')) + Math.round(n).toLocaleString('en-US'); }
+  /** All money in Camplo is US dollars. */
+  function money(n) { if (n == null) return '—'; var v = Number(n); return '$' + v.toLocaleString('en-US', { minimumFractionDigits: v % 1 ? 2 : 0, maximumFractionDigits: 2 }); }
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
   function dur(msv, withSec) {
     if (msv == null) return '—';
@@ -235,7 +235,7 @@
     document.body.classList.toggle('has-mnav', !PUBLIC[top]);
     var html;
     // D-NEW-17: phones get the AI feed, AI chat and magic-link acknowledgment only; everything else is desktop/tablet.
-    if (!PUBLIC[top] && top !== 'feed' && top !== 'onboarding' && isPhone()) { location.replace('#/feed'); return; }
+    if (!PUBLIC[top] && top !== 'feed' && top !== 'notes' && top !== 'onboarding' && isPhone()) { location.replace('#/feed'); return; }
     if (PUBLIC[top]) html = publicScreen(top, r);
     else if (!D) { html = bootScreen(); boot(); }
     else html = shell(r.parts, r.query);
@@ -282,12 +282,13 @@
     else if (top === 'settings') body = settingsScreen(p[1] || (isOwner() ? 'workspace' : 'team'));
     else if (top === 'onboarding') return onboarding(+p[1] || 1);
     else if (top === 'feed') body = mobileFeed();
+    else if (top === 'notes') body = mobileNotes();
     else body = '<div class="page">' + empty('target', 'Nothing here.', 'That screen does not exist.', '<a class="btn btn-ghost" href="#/dashboard">Back to dashboard</a>') + '</div>';
     return topnav(top) + strip() + (D.ws.hasMarketingStack === false && D.ws.stackCheckCompleted && isOwner() && !S.stackBannerHidden
       ? '<div class="page" style="padding-bottom:0;padding-top:16px"><div class="banner amber">' + ic('warn', 15) + ' Connect a marketing tool to start receiving leads. <a href="#/settings/integrations">View setup guide</a><button class="x" data-act="hideStack">×</button></div></div>' : '') +
       '<main>' + body + '</main>' + dock() +
       '<button class="brain-fab" data-act="chat">' + ic('brain', 18) + '<span>Ask Camplo</span></button>' +
-      '<nav class="mnav"><button class="' + (top === 'feed' || top === 'dashboard' ? 'active' : '') + '" data-go="feed">' + ic('feed', 20) + 'Feed</button><button data-act="chat">' + ic('chat', 20) + 'Chat</button></nav>';
+      '<nav class="mnav"><button class="' + (top === 'feed' || top === 'dashboard' ? 'active' : '') + '" data-go="feed">' + ic('feed', 20) + 'Feed</button><button class="' + (top === 'notes' ? 'active' : '') + '" data-go="notes" style="position:relative">' + ic('note', 20) + 'Notes' + (unreadMine() ? '<span class="dot-badge" style="position:absolute;top:2px;right:calc(50% - 22px);min-width:16px;height:16px;padding:0 4px;border-radius:9999px;background:var(--status-red);color:#fff;font:600 10px/16px var(--f-body)">' + unreadMine() + '</span>' : '') + '</button></nav>';
   }
 
   function topnav(top) {
@@ -321,7 +322,7 @@
       '<div class="strip-item" data-go="leads?status=unassigned"><span class="dot o ' + (unclaimed ? 'pulse-orange' : '') + '"></span><b>' + unclaimed + '</b> unclaimed</div>' +
       '<div class="strip-item" data-go="pages"><span class="dot ' + (offline ? 'r' : 'g') + '"></span><b>' + offline + '</b> webhook offline</div>' +
       '<div class="strip-item" data-go="leads"><b>' + today + '</b> leads today</div>' +
-      (over ? '<div class="strip-item" data-go="campaigns/' + over.id + '/overview">' + esc(over.name) + ' CPL <b class="amber">' + money(over.cpl, over.currency) + '</b></div>' : '') +
+      (over ? '<div class="strip-item" data-go="campaigns/' + over.id + '/overview">' + esc(over.name) + ' CPL <b class="amber">' + money(over.cpl) + '</b></div>' : '') +
       '<div class="strip-item strip-live">Plan: ' + cap(D.plan) + '</div>' +
       '</div>';
   }
@@ -438,7 +439,7 @@
       '<div class="spread"><div class="h3">' + esc(c.name) + '</div><div class="row">' + statusBadge2(c) +
       (canManage() && c.status !== 'COMPLETE' ? '<button class="close tip" data-tip="' + (c.pinned ? 'Unpin' : 'Pin') + '" data-act="pin" data-id="' + c.id + '" data-v="' + (c.pinned ? '0' : '1') + '" style="color:' + (c.pinned ? 'var(--accent-orange)' : 'var(--text-muted)') + '">' + ic('flag', 13) + '</button>' : '') + '</div></div>' +
       (c.desc ? '<div class="desc">' + esc(c.desc) + '</div>' : '') +
-      '<div class="row wrap gap12"><span class="small">Avg response: <b class="' + speedClass(c.avgResp) + '">' + secs(c.avgResp) + '</b></span>' + (c.cpl != null ? '<span class="ts">CPL: ' + money(c.cpl, c.currency) + '</span>' : '') + '<span class="ts">' + c.leads + ' leads</span></div>' +
+      '<div class="row wrap gap12"><span class="small">Avg response: <b class="' + speedClass(c.avgResp) + '">' + secs(c.avgResp) + '</b></span>' + (c.cpl != null ? '<span class="ts">CPL: ' + money(c.cpl) + '</span>' : '') + '<span class="ts">' + c.leads + ' leads</span></div>' +
       '<div class="foot"><div class="stack">' + c.members.slice(0, 3).map(function (m) { return av(m, 24); }).join('') + (c.members.length > 3 ? '<span class="avatar s24">+' + (c.members.length - 3) + '</span>' : '') + '</div>' +
       '<span class="ico-inline">' + ic('file', 13) + c.pages + ' pages</span><span class="ico-inline">' + ic('note', 13) + c.notes + ' notes</span><span style="margin-left:auto">' + fmtDate(c.start) + '</span></div>' +
       (c.retro ? '<div class="retro-chip">' + ic('file', 14) + ' Retrospective ready <span style="margin-left:auto">' + ic('download', 14) + '</span></div>' : '') +
@@ -524,10 +525,10 @@
       '<div class="row">' + (planOk('growth') ? (canManage() ? '<button class="btn btn-ghost" data-act="share" data-id="' + c.id + '">' + ic('share', 14) + ' Share with client</button>' : '') : planChip('growth')) +
       (c.status !== 'COMPLETE' && canManage() ? '<button class="btn btn-ghost" data-act="pauseCampaign" data-id="' + c.id + '" data-v="' + (c.status === 'PAUSED' ? 'active' : 'paused') + '">' + (c.status === 'PAUSED' ? 'Resume' : 'Pause') + '</button><button class="btn btn-ghost" data-act="markComplete" data-id="' + c.id + '">Mark Campaign Complete</button>' : '') + '</div></div>' +
       '<div class="camp-meta">' + statusBadge2(c) + '<span class="sep"></span>' +
-      '<span>Speed-to-lead <b class="' + speedClass(c.avgResp) + '">' + secs(c.avgResp) + '</b></span>' + (c.cpl != null ? '<span class="sep"></span><span>CPL <b class="' + (c.cplThreshold != null && c.cpl > c.cplThreshold ? 'amber' : '') + '">' + money(c.cpl, c.currency) + '</b></span>' : '') +
+      '<span>Speed-to-lead <b class="' + speedClass(c.avgResp) + '">' + secs(c.avgResp) + '</b></span>' + (c.cpl != null ? '<span class="sep"></span><span>CPL <b class="' + (c.cplThreshold != null && c.cpl > c.cplThreshold ? 'amber' : '') + '">' + money(c.cpl) + '</b></span>' : '') +
       '<span class="sep"></span><span>Started ' + fmtDate(c.start) + '</span><span class="sep"></span><span class="row">' + av(c.owner, 20) + esc(user(c.owner).name) + '</span><span class="sep"></span><span>' + (c.end ? 'Completed ' + fmtDate(c.end) : 'Day ' + c.days) + '</span></div>' +
       '<nav class="subtabs">' + tabs.map(function (t) {
-        return t[2] ? '<span class="subtab soon">' + t[1] + ' <span class="chip chip-soon">Soon</span></span>' : '<a class="subtab ' + (tab === t[0] ? 'active' : '') + '" href="#/campaigns/' + c.id + '/' + t[0] + '">' + t[1] + (t[0] === 'meeting' ? ' <span class="chip chip-soon">Soon</span>' : '') + '</a>';
+        return t[2] ? '<span class="subtab soon">' + t[1] + ' <span class="chip chip-soon">Soon</span></span>' : '<a class="subtab ' + (tab === t[0] ? 'active' : '') + '" href="#/campaigns/' + c.id + '/' + t[0] + '">' + t[1] + '</a>';
       }).join('') + '</nav></div>';
     var body;
     if (tab === 'leads') body = campaignLeads(c);
@@ -551,18 +552,23 @@
 
   function overviewTab(c) {
     var budget = '';
-    if (c.budget != null && planOk('growth')) {
+    var editable = canManage() && c.status !== 'COMPLETE';
+    if (planOk('growth')) {
       var over = c.cpl != null && c.cplThreshold != null && c.cpl > c.cplThreshold;
-      budget = '<div class="h3" style="margin-bottom:12px">Budget</div><div class="budget">' +
-        '<div><div class="label">Total budget</div><b>' + money(c.budget, c.currency) + '</b></div>' +
-        '<div><div class="label">Daily spend</div><b class="row" style="gap:6px">' + money(c.daily, c.currency) + (canManage() && c.status !== 'COMPLETE' ? ' <button class="close" data-act="editSpend" data-id="' + c.id + '" aria-label="Edit daily spend">' + ic('pen', 12) + '</button>' : '') + '</b></div>' +
-        '<div><div class="label">Leads to date</div><b>' + c.leads + '</b></div>' +
-        '<div><div class="label">CPL (live)</div><b class="' + (over ? 'amber' : 'green') + '">' + money(c.cpl, c.currency) + '</b></div>' +
-        '<div><div class="label">CPL threshold</div><b>' + money(c.cplThreshold, c.currency) + '</b><span class="ts">' + (c.cplThreshold == null ? 'Not set' : over ? 'Exceeded' : 'Within range') + '</span></div></div>' +
-        (over ? '<div class="banner amber" style="margin-top:12px">' + ic('warn', 15) + ' CPL above your threshold — AI has been notified</div>' : '') +
-        (canManage() && c.status !== 'COMPLETE' ? '<div style="margin-top:12px"><button class="btn btn-ghost btn-sm" data-act="logChange" data-id="' + c.id + '">' + ic('clock', 13) + ' Log a campaign change</button><span class="ts" style="margin-left:8px">Feeds campaign memory — Camplo measures the outcome after 7 days.</span></div>' : '') +
-        '<div style="height:32px"></div>';
-    } else if (c.budget != null) budget = '<div class="card" style="margin-bottom:24px"><div class="spread"><div><div class="h3">Budget tracker & CPL</div><div class="small">Track spend and cost per lead against a threshold.</div></div>' + planChip('growth') + '</div></div>';
+      var runway = c.budget != null && c.daily ? Math.floor(c.budget / c.daily) : null;
+      budget = '<div class="spread" style="margin-bottom:12px"><div class="h3">Budget &amp; CPL</div>' + (editable ? '<button class="btn btn-ghost btn-sm" data-act="editBudget" data-id="' + c.id + '">' + ic('pen', 13) + ' Edit budget</button>' : '') + '</div>' +
+        (c.budget == null && c.cplThreshold == null && c.daily == null
+          ? '<div class="card" style="margin-bottom:32px"><div class="small">No budget set for this campaign yet. Add a total budget, the daily spend and a CPL threshold — Camplo computes live cost per lead and alerts you when it crosses the threshold.</div>' + (editable ? '<button class="btn btn-primary btn-sm" style="margin-top:12px" data-act="editBudget" data-id="' + c.id + '">Set budget</button>' : '') + '</div>'
+          : '<div class="budget">' +
+            '<div><div class="label">Total budget</div><b>' + money(c.budget) + '</b>' + (runway != null ? '<span class="ts">≈ ' + runway + ' days at current spend</span>' : '') + '</div>' +
+            '<div><div class="label">Daily spend</div><b>' + money(c.daily) + '</b></div>' +
+            '<div><div class="label">Leads to date</div><b>' + c.leads + '</b></div>' +
+            '<div><div class="label">CPL (live)</div><b class="' + (over ? 'amber' : 'green') + '">' + money(c.cpl) + '</b><span class="ts">Daily spend ÷ leads</span></div>' +
+            '<div><div class="label">CPL threshold</div><b>' + money(c.cplThreshold) + '</b><span class="ts">' + (c.cplThreshold == null ? 'Not set' : over ? 'Exceeded' : 'Within range') + '</span></div></div>' +
+            (over ? '<div class="banner amber" style="margin-top:12px">' + ic('warn', 15) + ' CPL above your threshold — AI has been notified</div>' : '') +
+            (editable ? '<div style="margin-top:12px"><button class="btn btn-ghost btn-sm" data-act="logChange" data-id="' + c.id + '">' + ic('clock', 13) + ' Log a campaign change</button><span class="ts" style="margin-left:8px">Feeds campaign memory — Camplo measures the outcome after 7 days.</span></div>' : '') +
+            '<div style="height:32px"></div>');
+    } else budget = '<div class="card" style="margin-bottom:24px"><div class="spread"><div><div class="h3">Budget tracker & CPL</div><div class="small">Track spend and cost per lead against a threshold.</div></div>' + planChip('growth') + '</div></div>';
     var brief = S.editingOverview ?
       '<div class="editor-bar">' + ['B', 'I', 'U', 'S', 'H', '🔗', '•', '1.', '≡'].map(function (b, i) { var cmds = ['bold', 'italic', 'underline', 'strikeThrough', 'hiliteColor', 'createLink', 'insertUnorderedList', 'insertOrderedList', 'justifyLeft']; return '<button data-cmd="' + cmds[i] + '" title="' + cmds[i] + '">' + b + '</button>'; }).join('') + '</div>' +
       '<div class="editor prose" contenteditable="true" id="ovEditor">' + (c.brief || '') + '</div>' +
@@ -654,7 +660,7 @@
     var v = lazy('camp:meeting:' + c.id, '/campaigns/' + c.id + '/meeting-notes?limit=100', list);
     if (!v) return skel(2);
     if (v.__error) return errBox(v);
-    return '<div style="max-width:760px"><div class="spread"><div><div class="h2">Meeting Notes</div><div class="small italic" style="color:var(--text-muted)">Meeting notes will appear here automatically when you connect a meeting tool (coming soon). Add them manually for now.</div></div></div>' +
+    return '<div style="max-width:760px"><div class="spread"><div><div class="h2">Meeting Notes</div><div class="small italic" style="color:var(--text-muted)">Record what was agreed in client and team meetings. Notes are permanent and editable for 2 hours after posting.</div></div></div>' +
       '<div style="margin-top:12px">' + (v.length ? v.map(function (n) { return noteItem(Object.assign({ kind: 'note' }, n)); }).join('') : empty('note', 'No meeting notes yet.', '')) + '</div>' +
       '<div class="card" style="margin-top:16px"><div class="h3">Add manually</div><div class="form-grid" style="margin-top:12px"><div class="field"><label>Title (optional)</label><input class="input" id="mnTitle" /></div><div class="field"><label>Meeting date</label><input class="input" type="datetime-local" id="mnDate" /></div></div>' +
       '<textarea class="input" id="mnBody" style="margin-top:12px" placeholder="What was agreed? Notes cannot be deleted once posted."></textarea><div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn btn-primary" data-act="postMeeting" data-id="' + c.id + '">Save</button></div></div></div>';
@@ -695,7 +701,7 @@
       '<div><div class="label">Total leads</div><div class="display">' + (r.totalLeads || 0) + '</div></div>' +
       '<div><div class="label">Avg speed-to-lead</div><div class="display ' + speedClass(r.avgResponseTimeMs == null ? null : r.avgResponseTimeMs / 1000) + '" style="font-size:40px">' + dur(r.avgResponseTimeMs, true) + '</div><div class="kpi-sub">5 min target · you averaged ' + dur(r.avgResponseTimeMs, true) + '</div></div>' +
       '<div><div class="label">Acknowledgment rate</div><div class="display">' + (r.acknowledgmentRate == null ? '—' : Math.round(r.acknowledgmentRate * 100) + '%') + '</div></div>' +
-      (r.cpl != null ? '<div><div class="label">Cost per lead</div><div class="display" style="font-size:40px">' + money(r.cpl, r.currency) + '</div></div>' : '') + '</div>' +
+      (r.cpl != null ? '<div><div class="label">Cost per lead</div><div class="display" style="font-size:40px">' + money(r.cpl) + '</div></div>' : '') + '</div>' +
       (r.bestPage || r.worstPage ? '<div class="divider" style="margin:28px 0"></div><div class="form-grid">' +
         (r.bestPage ? '<div><div class="label">Best performing page</div><div class="h3" style="margin-top:6px">' + esc(r.bestPage.name) + '</div><div class="green small">' + (r.bestPage.conversionRate == null ? '' : (r.bestPage.conversionRate * 100).toFixed(1) + '% conversion') + '</div></div>' : '') +
         (r.worstPage ? '<div><div class="label">Worst performing page</div><div class="h3" style="margin-top:6px">' + esc(r.worstPage.name) + '</div><div class="red small">' + (r.worstPage.conversionRate == null ? '' : (r.worstPage.conversionRate * 100).toFixed(1) + '% conversion') + '</div></div>' : '') + '</div>' : '') +
@@ -793,10 +799,10 @@
       '<div class="table-wrap"><table><thead><tr><th>Page name</th>' + (hideCampaign ? '' : '<th>Campaign</th>') + '<th>Status</th><th>Webhook</th><th>Visits (7d)</th><th>Leads (7d)</th><th>Conversion</th>' + (canManage() ? '<th style="text-align:right">Actions</th>' : '') + '</tr></thead><tbody>' +
       list.map(function (p) {
         var st = { ACTIVE: 'b-green', PAUSED: 'b-amber', ARCHIVED: 'b-grey' }[p.status];
-        return '<tr data-act="pageDrawer" data-id="' + p.id + '"><td><div class="nm" style="font-weight:600">' + esc(p.name) + (p.vip ? ' <span class="chip" style="height:18px;font-size:10px;color:var(--status-amber)">VIP</span>' : '') + '</div><div class="mono" style="color:var(--text-muted)">' + esc(p.host) + '</div></td>' +
+        return '<tr data-act="pageDrawer" data-id="' + p.id + '"><td><div class="nm" style="font-weight:600">' + esc(p.name) + (p.vip ? ' <span class="chip" style="height:18px;font-size:10px;color:var(--status-amber)">VIP</span>' : '') + '</div><div class="mono host" style="color:var(--text-muted)" title="' + esc(p.host) + '">' + esc(p.host) + '</div></td>' +
           (hideCampaign ? '' : '<td class="sec">' + esc(p.campName || '—') + '</td>') + '<td><span class="badge ' + st + '">' + p.status + '</span></td><td>' + hookIndicator(p) + '</td><td>' + p.visits.toLocaleString() + '</td><td>' + p.leads + '</td>' +
           '<td class="' + (p.conv == null ? 'muted' : p.above ? 'green' : 'red') + '" style="font-weight:600">' + (p.conv == null ? '—' : (p.conv * 100).toFixed(1) + '%') + '</td>' +
-          (canManage() ? '<td style="text-align:right"><div class="row" style="justify-content:flex-end"><button class="btn btn-ghost btn-sm" data-act="redeploy" data-id="' + p.id + '" title="Upload new version">' + ic('upload', 13) + '</button><button class="btn btn-ghost btn-sm" data-act="serving" data-id="' + p.id + '" data-v="' + (p.status === 'ACTIVE' ? 'pause' : 'unpause') + '">' + (p.status === 'ACTIVE' ? 'Pause' : 'Unpause') + '</button><button class="btn btn-ghost btn-sm" data-act="pageMenu" data-id="' + p.id + '">' + ic('more', 14) + '</button></div></td>' : '') + '</tr>';
+          (canManage() ? '<td style="text-align:right"><div class="row" style="justify-content:flex-end"><button class="btn btn-ghost btn-sm" data-act="redeploy" data-id="' + p.id + '" title="Upload new version">' + ic('upload', 13) + '</button><button class="btn btn-ghost btn-sm" data-act="serving" data-id="' + p.id + '" data-v="' + (p.status === 'ACTIVE' ? 'pause' : 'unpause') + '">' + (p.status === 'ACTIVE' ? 'Pause' : p.status === 'ARCHIVED' ? 'Restore' : 'Unpause') + '</button><button class="btn btn-ghost btn-sm" data-act="pageMenu" data-id="' + p.id + '">' + ic('more', 14) + '</button></div></td>' : '') + '</tr>';
       }).join('') + '</tbody></table></div>';
   }
   function pagesScreen() {
@@ -823,7 +829,9 @@
       '<div class="label" style="margin:24px 0 8px">Leads from this page</div>' + (!ls ? skel(2) : ls.__error ? errBox(ls) : ls.length ? ls.map(function (l) { return '<div class="list-row" data-go="leads/' + l.id + '" style="cursor:pointer"><span class="grow"><b>' + esc(l.name) + '</b> <span class="mono" style="color:var(--text-muted)">' + l.displayId + '</span></span>' + (l.respondedAt ? '<span class="green">Responded</span>' : '<span class="red" data-since="' + l.arrived + '"></span>') + '</div>'; }).join('') : '<div class="small">No leads from this page yet.</div>') +
       (canManage() ? '<div class="col gap12" style="margin-top:24px">' + (p.rollback ? '<div><button class="btn btn-ghost" data-act="rollback" data-id="' + p.id + '">Rollback to previous version</button><div class="ts" style="margin-top:4px">Version from ' + fmtDate(p.prevAt) + ' · stored for 30 days</div></div>' : '') +
         '<button class="btn btn-ghost" style="align-self:flex-start" data-act="domain" data-id="' + p.id + '">' + (p.domain ? 'Custom domain: ' + esc(p.domain.name) + ' (' + p.domain.status + ')' : 'Connect custom domain') + '</button>' +
-        '<label class="checkbox"><input type="checkbox" data-act-change="pageVip" data-id="' + p.id + '" ' + (p.vip ? 'checked' : '') + '/> VIP page (tighter SLA threshold)</label></div>' : ''));
+        '<label class="checkbox"><input type="checkbox" data-act-change="pageVip" data-id="' + p.id + '" ' + (p.vip ? 'checked' : '') + '/> VIP page (tighter SLA threshold)</label>' +
+        '<div class="row" style="gap:8px"><button class="btn btn-ghost" data-act="serving" data-id="' + p.id + '" data-v="' + (p.status === 'ACTIVE' ? 'pause' : 'unpause') + '">' + (p.status === 'ACTIVE' ? 'Pause page' : p.status === 'ARCHIVED' ? 'Restore page' : 'Unpause page') + '</button>' +
+        (isOwner() ? '<button class="btn btn-danger" data-act="deletePage" data-id="' + p.id + '">Delete page</button>' : '') + '</div></div>' : ''));
   }
 
   // ================================================================ SLA (Screen 12)
@@ -1125,6 +1133,19 @@
     return authWrap(dots + inner);
   }
 
+  function unreadMine() { return (D && D.teamNotes || []).filter(function (t) { return t.addressedToMe && t.unread; }).length; }
+
+  /** Phone: team notes, with the ones addressed to me first. */
+  function mobileNotes() {
+    var mine = D.teamNotes.filter(function (t) { return t.addressedToMe; });
+    var others = D.teamNotes.filter(function (t) { return !t.addressedToMe; });
+    var tab = S.mNotesTab || 'mine';
+    var list = tab === 'mine' ? mine : others;
+    return '<div class="page" style="max-width:640px"><div class="h2">Notes</div>' +
+      '<div class="pills" style="margin:12px 0 16px"><button class="pill ' + (tab === 'mine' ? 'active' : '') + '" data-act="mNotes" data-v="mine">For me' + (unreadMine() ? ' · ' + unreadMine() : '') + '</button><button class="pill ' + (tab === 'all' ? 'active' : '') + '" data-act="mNotes" data-v="all">Team notes</button></div>' +
+      '<div class="col gap12">' + (list.length ? list.map(teamNoteCard).join('') : empty('note', tab === 'mine' ? 'No notes for you.' : 'No other team notes.', '')) + '</div></div>';
+  }
+
   function mobileFeed() {
     return '<div class="page" style="max-width:640px"><div class="spread"><div class="h2">Feed</div>' + (D.live.overdueCount ? '<span class="badge b-red b-bold">' + D.live.overdueCount + ' overdue</span>' : '') + '</div><div class="feed">' + sortInsights(D.insights).map(function (i, x) { return insightCard(i, x); }).join('') + '</div>' +
       '<button class="btn btn-ghost btn-full" style="margin-top:16px" data-act="refreshInsights">' + ic('refresh', 14) + ' Refresh</button></div>';
@@ -1238,7 +1259,7 @@
       '<div class="field"><label>Campaign name</label><input class="input" id="ncName" maxlength="100" placeholder="e.g. Christmas Hampers 2026" /><span class="errmsg hidden" id="ncErr">Give the campaign a name.</span></div>' +
       '<div class="field"><label>Description</label><textarea class="input" id="ncDesc" placeholder="What is this campaign, and what does success look like?"></textarea></div>' +
       '<div class="form-grid"><div class="field"><label>Owner</label><input class="input" value="' + esc(D.me.name) + '" disabled /></div><div class="field"><label>Start date</label><input class="input" type="date" id="ncDate" value="' + new Date().toISOString().slice(0, 10) + '" /></div></div>' +
-      (planOk('growth') ? '<div class="form-grid"><div class="field"><label>Budget (optional)</label><div class="row"><select class="select" id="ncCur" style="width:100px"><option value="USD">$ USD</option><option value="NGN">₦ NGN</option><option value="GBP">£ GBP</option><option value="EUR">€ EUR</option><option value="KES">KES</option><option value="GHS">GHS</option><option value="ZAR">ZAR</option></select><input class="input" id="ncBudget" type="number" min="0" placeholder="0" /></div></div><div class="field"><label>Alert when CPL exceeds (optional)</label><input class="input" id="ncCpl" type="number" min="0" placeholder="CPL threshold" /></div></div>' : '') + '</div>',
+      (planOk('growth') ? '<div class="form-grid"><div class="field"><label>Total budget (USD, optional)</label><input class="input" id="ncBudget" type="number" min="0" step="0.01" placeholder="$0" /></div><div class="field"><label>Alert when CPL exceeds (USD, optional)</label><input class="input" id="ncCpl" type="number" min="0" step="0.01" placeholder="e.g. 25" /></div></div>' : '') + '</div>',
       '<button class="btn btn-ghost" data-act="close">Cancel</button><button class="btn btn-primary" data-act="createCampaign">Create Campaign</button>');
   }
   function uploadModal() {
@@ -1557,7 +1578,7 @@
         done = busy(el);
         api('/campaigns', { method: 'POST', body: {
           name: nm.value.trim(), description: document.getElementById('ncDesc').value ? '<p>' + esc(document.getElementById('ncDesc').value) + '</p>' : null, startDate: document.getElementById('ncDate').value,
-          budget: bud && bud.value ? +bud.value : null, cplThreshold: cpl && cpl.value && bud && bud.value ? +cpl.value : null, currency: document.getElementById('ncCur') ? document.getElementById('ncCur').value : 'USD',
+          budget: bud && bud.value ? +bud.value : null, cplThreshold: cpl && cpl.value ? +cpl.value : null,
         } }).then(function (c) { closeOverlay(); toast('Campaign created'); return loadCore().then(function () { go('campaigns/' + c.id + '/overview'); }); }, function (x) { done(); fail(x); });
         break;
       case 'pin':
@@ -1571,9 +1592,21 @@
         ni.addEventListener('keydown', function (k) { if (k.key === 'Enter') ni.blur(); if (k.key === 'Escape') { ni.value = camp(id).name; ni.blur(); } });
         ni.addEventListener('blur', save, { once: true });
         break;
-      case 'editSpend':
-        var val = prompt('Daily spend (' + (camp(id).currency) + ')', camp(id).daily == null ? '' : camp(id).daily);
-        if (val != null && val !== '' && !isNaN(+val)) reauthAfterMutation(api('/campaigns/' + id, { method: 'PATCH', body: { dailySpend: +val } }), 'Daily spend updated — logged to campaign memory');
+      case 'editBudget':
+        var cb = camp(id);
+        openOverlay(modal('Budget &amp; CPL — ' + esc(cb.name), '<div class="col gap16"><div class="small">All amounts in US dollars. Changes to budget or daily spend are logged to campaign memory so Camplo can measure their effect.</div>' +
+          '<div class="form-grid"><div class="field"><label>Total budget ($)</label><input class="input" id="bgTotal" type="number" min="0" step="0.01" value="' + (cb.budget == null ? '' : cb.budget) + '" placeholder="e.g. 5000" /></div>' +
+          '<div class="field"><label>Daily spend ($)</label><input class="input" id="bgDaily" type="number" min="0" step="0.01" value="' + (cb.daily == null ? '' : cb.daily) + '" placeholder="e.g. 250" /></div></div>' +
+          '<div class="field"><label>CPL threshold ($) — alert when cost per lead goes above this</label><input class="input" id="bgCpl" type="number" min="0" step="0.01" value="' + (cb.cplThreshold == null ? '' : cb.cplThreshold) + '" placeholder="e.g. 20" /></div>' +
+          '<span class="errmsg hidden" id="bgErr"></span><div class="ts">Leave a field empty to clear it.</div></div>',
+          '<button class="btn btn-ghost" data-act="close">Cancel</button><button class="btn btn-primary" data-act="saveBudget" data-id="' + id + '">Save</button>'));
+        break;
+      case 'saveBudget':
+        var num = function (elId) { var x = document.getElementById(elId).value.trim(); return x === '' ? null : Number(x); };
+        var bgBody = { budget: num('bgTotal'), dailySpend: num('bgDaily'), cplThreshold: num('bgCpl') };
+        if ([bgBody.budget, bgBody.dailySpend, bgBody.cplThreshold].some(function (x) { return x != null && (isNaN(x) || x < 0); })) { var be = document.getElementById('bgErr'); be.textContent = 'Amounts must be 0 or more.'; be.classList.remove('hidden'); break; }
+        done = busy(el);
+        reauthAfterMutation(api('/campaigns/' + id, { method: 'PATCH', body: bgBody }), 'Budget saved').then(closeOverlay, function () { done(); });
         break;
       case 'logChange':
         openOverlay(modal('Log a campaign change', '<div class="col gap16"><div class="field"><label>What changed?</label><select class="select" id="chType"><option value="budget">Budget</option><option value="audience">Audience</option><option value="creative">Creative</option><option value="messaging">Messaging</option><option value="page">Landing page</option></select></div><div class="field"><label>Describe it</label><input class="input" id="chDesc" placeholder="e.g. Switched hero video to carousel"/></div><div class="small">Camplo snapshots performance now and measures it again in 7 days. Future recommendations reference the outcome.</div></div>', '<button class="btn btn-ghost" data-act="close">Cancel</button><button class="btn btn-primary" data-act="saveChange" data-id="' + id + '">Log change</button>'));
@@ -1674,6 +1707,7 @@
         api('/pages/' + id + '/webhook/test', { method: 'POST' }).then(function (r) { done(); toast(r.ok ? 'Test sent ✓ — signature verified in ' + r.latencyMs + 'ms' : 'Webhook test failed', r.ok ? '' : 'error'); }, function (x) { done(); fail(x); });
         break;
       case 'slaTab': S.slaTab = v; render(true); break;
+      case 'mNotes': S.mNotesTab = v; render(true); break;
       case 'slaDay': S.slaDay = v === '' ? null : +v; render(true); break;
       case 'saveSla':
         var mins = Math.round(+document.getElementById('slaMin').value * +document.getElementById('slaUnit').value);
